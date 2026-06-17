@@ -1,1 +1,0 @@
-# Test-Intern-Full-stack-developer
