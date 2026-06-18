@@ -1,0 +1,236 @@
+{
+  "info": {
+    "name": "Log Management System API",
+    "version": "1.0.0",
+    "description": "API collection for Log Management System per spec.md"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "body": {
+              "mode": "json",
+              "json": {
+                "username": "admin",
+                "password": "admin123"
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Current User",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/auth/me",
+            "auth": {
+              "type": "bearer",
+              "bearer": "{{token}}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ingest",
+      "item": [
+        {
+          "name": "POST Single Log",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/ingest",
+            "body": {
+              "mode": "json",
+              "json": {
+                "tenant": "demoA",
+                "source": "api",
+                "event_type": "app_login_failed",
+                "user": "alice",
+                "ip": "203.0.113.7",
+                "reason": "wrong_password"
+              }
+            }
+          }
+        },
+        {
+          "name": "POST Batch Logs",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/ingest",
+            "body": {
+              "mode": "json",
+              "json": [
+                {
+                  "tenant": "demoA",
+                  "source": "api",
+                  "event_type": "event1"
+                },
+                {
+                  "tenant": "demoA",
+                  "source": "api",
+                  "event_type": "event2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Batch Files (AWS/M365/AD)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/ingest/batch",
+            "body": {
+              "mode": "json",
+              "json": {
+                "source": "aws",
+                "tenant": "demoB",
+                "files": [
+                  {
+                    "logs": [
+                      {
+                        "tenant": "demoB",
+                        "source": "aws",
+                        "event_type": "CreateUser",
+                        "user": "admin"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logs",
+      "item": [
+        {
+          "name": "Query Logs",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/logs",
+            "auth": {
+              "type": "bearer",
+              "bearer": "{{token}}"
+            },
+            "query": [
+              {
+                "key": "tenant",
+                "value": "demoA"
+              },
+              {
+                "key": "source",
+                "value": "api"
+              },
+              {
+                "key": "page",
+                "value": "1"
+              },
+              {
+                "key": "size",
+                "value": "50"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Query Logs with Search",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/logs",
+            "auth": {
+              "type": "bearer",
+              "bearer": "{{token}}"
+            },
+            "query": [
+              {
+                "key": "q",
+                "value": "login"
+              },
+              {
+                "key": "start",
+                "value": "2025-08-01T00:00:00Z"
+              },
+              {
+                "key": "end",
+                "value": "2025-08-31T23:59:59Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Alerts",
+      "item": [
+        {
+          "name": "Get Alert Rules",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/alerts",
+            "auth": {
+              "type": "bearer",
+              "bearer": "{{token}}"
+            }
+          }
+        },
+        {
+          "name": "Create Alert Rule",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/alerts",
+            "auth": {
+              "type": "bearer",
+              "bearer": "{{token}}"
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "name": "Brute Force Login Detection",
+                "description": "Detect brute force login attempts",
+                "event_types": ["LogonFailed", "app_login_failed"],
+                "threshold": 5,
+                "window_minutes": 5,
+                "action": "store",
+                "webhook_url": "https://example.com/webhook",
+                "enabled": true
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Triggered Alerts",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/alerts/triggered",
+            "auth": {
+              "type": "bearer",
+              "bearer": "{{token}}"
+            },
+            "query": [
+              {
+                "key": "limit",
+                "value": "100"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ]
+}

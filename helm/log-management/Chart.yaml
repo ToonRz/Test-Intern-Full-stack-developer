@@ -1,0 +1,22 @@
+apiVersion: v2
+name: log-management
+description: Log Management System — Kubernetes Helm chart
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: backend
+    condition: backend.enabled
+    version: "1.0.0"
+  - name: frontend
+    condition: frontend.enabled
+    version: "1.0.0"
+  - name: redis
+    condition: redis.enabled
+    version: "17.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+  - name: ingress-nginx
+    condition: ingress-nginx.enabled
+    version: "4.x.x"
+    repository: "https://kubernetes.github.io/ingress-nginx"

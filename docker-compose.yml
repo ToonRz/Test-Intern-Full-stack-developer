@@ -1,0 +1,122 @@
+version: '3.8'
+
+# Syslog port (514 UDP + 514 TCP per spec §5.1) is exposed ONLY via the
+# backend service below — the nginx stream block forwards UDP/514 traffic to
+# the backend.
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: logs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/logs
+      SECRET_KEY: "${SECRET_KEY:?SECRET_KEY must be set (use: openssl rand -hex 32)}"
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      SYSLOG_HOST: "0.0.0.0"
+      SYSLOG_PORT: 514
+      DATA_RETENTION_DAYS: ${DATA_RETENTION_DAYS:-7}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+      - "514:514/udp"   # Syslog UDP — spec §5.1
+      - "514:514/tcp"   # Syslog TCP — spec §5.1 (same port, different protocol)
+    # cap_net_bind_service lets the unprivileged `app` user bind 514/udp + 515/tcp.
+    cap_add:
+      - NET_BIND_SERVICE
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+      - ./tests:/app/tests
+      - ./pytest.ini:/app/pytest.ini
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      VITE_API_URL: http://backend:8000/api/v1
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # One-shot: generate self-signed TLS certs if missing.
+  certs-init:
+    image: alpine:3.19
+    volumes:
+      - ./nginx/certs:/certs
+      - ./scripts/generate-certs.sh:/generate-certs.sh:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache openssl bash >/dev/null \
+          && bash /generate-certs.sh /certs \
+          || (echo "cert generation failed" && exit 1)
+    restart: "no"
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      # Note: 514 (both UDP and TCP) is owned by the backend service above
+      # (see header comment). For cloud-mode SaaS, terminate syslog at the
+      # cloud LB and forward UDP/514 + TCP/514 to the backend.
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      certs-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:

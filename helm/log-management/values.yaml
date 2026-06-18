@@ -1,0 +1,106 @@
+# Global values
+namespace: log-management
+
+# Backend
+backend:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/REPO/backend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  env:
+    APP_NAME: "Log Management System"
+    DEBUG: "false"
+    API_PREFIX: "/api/v1"
+    DATABASE_URL: ""
+    REDIS_URL: "redis://redis:6379/0"
+    SECRET_KEY: ""
+    ALGORITHM: "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+    DATA_RETENTION_DAYS: "7"
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# Frontend
+frontend:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/REPO/frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  env:
+    VITE_API_URL: "/api/v1"
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Redis
+redis:
+  enabled: true
+  architecture: "standalone"
+  auth:
+    enabled: false
+
+  master:
+    persistence:
+      enabled: true
+      size: 2Gi
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+# Ingress NGINX
+ingress-nginx:
+  enabled: true
+  controller:
+    service:
+      type: LoadBalancer
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    sslProtocols: "TLSv1.2 TLSv1.3"
+    useHttp2: true
+
+  tcp:
+    services:
+      syslog:
+        port: 514
+        targetPort: 1514
+
+# Global annotations
+global:
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"

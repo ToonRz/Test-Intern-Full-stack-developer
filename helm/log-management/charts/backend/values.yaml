@@ -1,0 +1,38 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/REPO/backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+env:
+  APP_NAME: "Log Management System"
+  DEBUG: "false"
+  API_PREFIX: "/api/v1"
+  DATABASE_URL: ""
+  SECRET_KEY: ""
+  ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+  DATA_RETENTION_DAYS: "7"
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"

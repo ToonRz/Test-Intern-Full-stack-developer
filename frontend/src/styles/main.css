@@ -1,0 +1,380 @@
+/* Inter for body, JetBrains Mono for code, and a serif stack for display
+   per Design.md. Copernicus / Tiempos Headline are Anthropic-licensed so we
+   fall back to EB Garamond → Cormorant Garamond — both have the warm serif
+   character the brand voice requires. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=EB+Garamond:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   Design System Tokens (Design.md)
+   ============================================ */
+:root {
+  /* Brand & Accent */
+  --color-primary: #cc785c;
+  --color-primary-active: #a9583e;
+  --color-primary-disabled: #e6dfd8;
+  --color-accent-teal: #5db8a6;
+  --color-accent-amber: #e8a55a;
+
+  /* Surface */
+  --color-canvas: #faf9f5;
+  --color-surface-soft: #f5f0e8;
+  --color-surface-card: #efe9de;
+  --color-surface-cream-strong: #e8e0d2;
+  --color-surface-dark: #181715;
+  --color-surface-dark-elevated: #252320;
+  --color-surface-dark-soft: #1f1e1b;
+  --color-hairline: #e6dfd8;
+  --color-hairline-soft: #ebe6df;
+
+  /* Text */
+  --color-ink: #141413;
+  --color-body-strong: #252523;
+  --color-body: #3d3d3a;
+  --color-muted: #6c6a64;
+  --color-muted-soft: #8e8b82;
+  --color-on-primary: #ffffff;
+  --color-on-dark: #faf9f5;
+  --color-on-dark-soft: #a09d96;
+
+  /* Semantic */
+  --color-success: #5db872;
+  --color-warning: #d4a017;
+  --color-error: #c64545;
+
+  /* Spacing */
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+
+  /* Rounded */
+  --rounded-xs: 4px;
+  --rounded-sm: 6px;
+  --rounded-md: 8px;
+  --rounded-lg: 12px;
+  --rounded-xl: 16px;
+  --rounded-pill: 9999px;
+
+  /* Typography stacks */
+  --font-display: 'EB Garamond', 'Tiempos Headline', 'Copernicus', Garamond, 'Times New Roman', serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+@layer base {
+  *, *::before, *::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    color: var(--color-ink);
+  }
+
+  h1 { font-size: 36px; line-height: 1.15; letter-spacing: -0.012em; }
+  h2 { font-size: 28px; line-height: 1.2; letter-spacing: -0.01em; }
+  h3 { font-size: 22px; line-height: 1.3; }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.02em;
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+  .label-overline {
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--color-muted);
+  }
+  /* Form labels only — keep the line above the input. */
+  label.label-overline {
+    display: block;
+    margin-bottom: 6px;
+  }
+  /* Table headers must stay `display: table-cell` or the row collapses
+     into a vertical stack of blocks (UserManagement table, LogSearch
+     table). `display: revert` restores the browser default for `<th>`. */
+  th.label-overline {
+    display: table-cell;
+  }
+}
+
+@layer components {
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 20px;
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    border-radius: var(--rounded-md);
+    height: 40px;
+    cursor: pointer;
+    border: none;
+    text-decoration: none;
+    background: transparent;
+    color: var(--color-ink);
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background-color: var(--color-primary);
+    color: var(--color-on-primary);
+  }
+
+  .btn-primary:hover:not(:disabled),
+  .btn-primary:active:not(:disabled) {
+    background-color: var(--color-primary-active);
+  }
+
+  .btn-secondary {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .btn-secondary:hover:not(:disabled) {
+    background-color: var(--color-surface-soft);
+  }
+
+  .btn-ghost {
+    background-color: transparent;
+    color: var(--color-body);
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    background-color: var(--color-surface-soft);
+  }
+
+  .btn-text-link {
+    background: transparent;
+    color: var(--color-ink);
+    padding: 8px 4px;
+    height: auto;
+  }
+
+  .btn-text-link:hover:not(:disabled) {
+    color: var(--color-primary);
+  }
+
+  /* ── Form Elements ── */
+  .input {
+    width: 100%;
+    padding: 10px 14px;
+    font-family: var(--font-body);
+    font-size: 16px;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--rounded-md);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    height: 40px;
+  }
+
+  .input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.15);
+  }
+
+  .input::placeholder {
+    color: var(--color-muted-soft);
+  }
+
+  .select {
+    appearance: none;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236c6a64' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 1.5em 1.5em;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background-color: var(--color-surface-card);
+    border-radius: var(--rounded-lg);
+    padding: var(--space-xl);
+    /* Per Design.md: shadows minimal, depth from color-block. */
+  }
+
+  .card-dark {
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    border-radius: var(--rounded-lg);
+    padding: var(--space-xl);
+  }
+
+  /* ── Top nav links ── */
+  .nav-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-muted);
+    border-radius: var(--rounded-md);
+    transition: background-color 0.15s ease, color 0.15s ease;
+    text-decoration: none;
+  }
+
+  .nav-link:hover {
+    color: var(--color-ink);
+    background-color: var(--color-surface-soft);
+  }
+
+  .nav-link-active {
+    color: var(--color-ink);
+    background-color: var(--color-surface-card);
+  }
+
+  /* ── Category tabs (Dashboard time-range chips) ── */
+  .category-tab-active {
+    background-color: var(--color-surface-card);
+    color: var(--color-ink);
+  }
+
+  /* ── Badges / Pills ── */
+  .badge-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+    border-radius: var(--rounded-pill);
+    background-color: var(--color-surface-card);
+    color: var(--color-ink);
+  }
+
+  .badge-coral {
+    background-color: var(--color-primary);
+    color: var(--color-on-primary);
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .badge-active {
+    background-color: var(--color-accent-amber);
+    color: var(--color-on-primary);
+  }
+
+  .badge-muted {
+    background-color: var(--color-surface-soft);
+    color: var(--color-muted);
+  }
+
+  /* Severity bucket badges — match Dashboard.severityBucket() output. */
+  .badge-critical {
+    background-color: rgba(198, 69, 69, 0.15);
+    color: var(--color-error);
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+  .badge-high {
+    background-color: rgba(232, 165, 90, 0.20);
+    color: var(--color-accent-amber);
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+  .badge-medium {
+    background-color: rgba(212, 160, 23, 0.15);
+    color: var(--color-warning);
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+  .badge-low {
+    background-color: rgba(93, 184, 166, 0.15);
+    color: var(--color-accent-teal);
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Code Block ── */
+  .code-block {
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: var(--space-md);
+    border-radius: var(--rounded-md);
+    overflow-x: auto;
+  }
+
+  /* ── Empty State ── */
+  .empty-state {
+    text-align: center;
+    padding: var(--space-xxl);
+    background-color: var(--color-surface-card);
+    border-radius: var(--rounded-lg);
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-hairline);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-muted-soft);
+  }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.animate-ping {
+  animation: pulse-ring 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}

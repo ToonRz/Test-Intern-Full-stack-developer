@@ -1,0 +1,22 @@
+[
+  {
+    "tenant": "demoB",
+    "source": "m365",
+    "event_type": "UserLoggedIn",
+    "user": "bob@demo.local",
+    "ip": "198.51.100.23",
+    "status": "Success",
+    "workload": "Exchange",
+    "@timestamp": "2025-08-20T10:05:00Z"
+  },
+  {
+    "tenant": "demoB",
+    "source": "m365",
+    "event_type": "UserLoginFailed",
+    "user": "alice@demo.local",
+    "ip": "203.0.113.50",
+    "status": "Fail",
+    "workload": "AzureAD",
+    "@timestamp": "2025-08-20T10:10:00Z"
+  }
+]
