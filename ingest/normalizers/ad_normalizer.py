@@ -33,7 +33,9 @@ def normalize_ad(data: dict, tenant: str = None) -> dict:
         "event_type": event_type,
         "event_subtype": str(event_id) if event_id else None,
         "user": data.get("user"),
-        "src_ip": data.get("ip"),
+        # Spec §4.7 example uses input field `ip`; `src_ip` accepted as an
+        # alias so callers used to the normalized schema field can use either.
+        "src_ip": data.get("ip") or data.get("src_ip"),
         "host": data.get("host"),
         "severity": severity,
         "action": action,

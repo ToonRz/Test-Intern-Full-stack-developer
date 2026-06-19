@@ -77,6 +77,17 @@ function AlertTriggered() {
 
   useEffect(() => { loadAlerts() }, [filters])
 
+  // Low #28: auto-refresh every 30s so the operator sees new triggers without
+  // hammering the Refresh button. Cleanup on unmount prevents the interval
+  // from leaking when the user navigates away.
+  useEffect(() => {
+    const id = setInterval(loadAlerts, 30000)
+    return () => clearInterval(id)
+    // loadAlerts reads `filters` via closure; depending on `filters` here
+    // would reset the timer on every filter change which defeats the purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.severity, filters.source, filters.acknowledged])
+
   const loadAlerts = async () => {
     const token = ++loadTokenRef.current
     setLoading(true)

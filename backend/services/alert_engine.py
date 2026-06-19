@@ -44,10 +44,17 @@ class AlertEngine:
             return None
 
         # Match enabled rules whose event_types list contains this event_type.
+        # Critical #2: rules must be tenant-scoped. A rule with tenant="*"
+        # applies to every tenant; otherwise the rule's tenant must match the
+        # log's tenant (spec §6 — multi-tenant isolation).
         result = await self.db.execute(
             select(AlertRuleDB).where(
                 AlertRuleDB.enabled == True,
                 AlertRuleDB.event_types.cast(String).contains(log.event_type),
+                or_(
+                    AlertRuleDB.tenant == "*",
+                    AlertRuleDB.tenant == log.tenant,
+                ),
             )
         )
         rules = result.scalars().all()
@@ -171,6 +178,7 @@ class AlertEngine:
 
     async def create_alert_rule(self, rule: AlertRule) -> AlertRuleDB:
         db_rule = AlertRuleDB(
+            tenant=rule.tenant or "*",
             name=rule.name,
             description=rule.description,
             event_types=rule.event_types,
@@ -193,6 +201,8 @@ class AlertEngine:
         if not db_rule:
             return None
         # Partial update — only the fields the schema carries.
+        if rule.tenant is not None:
+            db_rule.tenant = rule.tenant
         db_rule.name = rule.name
         db_rule.description = rule.description
         db_rule.event_types = rule.event_types

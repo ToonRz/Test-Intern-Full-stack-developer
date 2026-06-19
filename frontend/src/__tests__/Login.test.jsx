@@ -31,9 +31,12 @@ describe('Login Page', () => {
     expect(screen.getByRole('button', { name: /sign in/i })).toBeTruthy()
   })
 
-  it('calls onLogin with token on successful login', async () => {
+  it('calls onLogin on successful login (cookie handles token storage)', async () => {
+    // Low #27: after the HttpOnly cookie migration the browser stores the
+    // token in a cookie the SPA cannot read. Login.jsx only needs to know
+    // the call succeeded — it calls onLogin() with no args.
     const onLogin = vi.fn()
-    api.auth.login.mockResolvedValue({ data: { access_token: 'test-token' } })
+    api.auth.login.mockResolvedValue({ data: { access_token: 'opaque-to-js' } })
 
     renderLogin(onLogin)
 
@@ -47,7 +50,7 @@ describe('Login Page', () => {
 
     await vi.waitFor(() => {
       expect(api.auth.login).toHaveBeenCalledWith('admin', 'admin123')
-      expect(onLogin).toHaveBeenCalledWith('test-token')
+      expect(onLogin).toHaveBeenCalledWith()
     })
   })
 

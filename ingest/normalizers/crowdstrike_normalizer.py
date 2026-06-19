@@ -19,7 +19,11 @@ def normalize_crowdstrike(data: dict, tenant: str = None) -> dict:
         "host": data.get("host"),
         "process": data.get("process"),
         "user": data.get("user"),
-        "src_ip": data.get("ip"),
+        # Spec §4.4 example does not include an IP field; `src_ip` is
+        # accepted as an alias so callers populating the normalized field
+        # name get the same result as if they had used the spec example's
+        # `ip`.
+        "src_ip": data.get("ip") or data.get("src_ip"),
         "sha256": data.get("sha256"),
         "@timestamp": data.get("@timestamp") or datetime.now(timezone.utc).isoformat(),
         "raw": data,

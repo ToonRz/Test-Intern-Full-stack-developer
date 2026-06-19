@@ -34,7 +34,7 @@ def _parse_timestamp(ts: Optional[str]) -> datetime:
 
 
 async def save_log(db: AsyncSession, log: NormalizedLog, enrichment: Optional[dict] = None) -> LogEntry:
-    tags = list(log._tags) if log._tags else []
+    tags = list(log.tags) if log.tags else []
     if enrichment and enrichment.get("_tags"):
         tags.extend(enrichment["_tags"])
 
@@ -90,7 +90,14 @@ async def enrich_and_save(db: AsyncSession, log: NormalizedLog) -> LogEntry:
                 "_tags": result._tags,
             }
         except Exception:
+            # Enrichment failure must not poison the DB session — the next
+            # save_log() call shares this session and would otherwise hit
+            # PendingRollbackError on commit. Rollback to clear the failed
+            # transaction state, then save the log without enrichment data.
             logger.exception("Enrichment failed for src_ip=%s", log.src_ip)
+            await db.rollback()
+            from backend.services.enrichment import RedisCache
+            RedisCache._instance = None
     return await save_log(db, log, enrichment)
 
 

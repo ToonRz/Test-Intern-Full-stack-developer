@@ -1,40 +1,45 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Bell, Loader2, Zap, ExternalLink } from 'lucide-react'
-import { alerts } from '../services/api'
+import { Plus, X, Bell, Loader2, Zap, ExternalLink, Pencil } from 'lucide-react'
+import { alerts, auth as authApi } from '../services/api'
 import clsx from 'clsx'
-import { jwtDecode } from 'jwt-decode'
 
 const EVENT_TYPE_SUGGESTIONS = [
   'LogonFailed', 'app_login_failed', 'malware_detected',
   'CreateUser', 'DeleteUser', 'UserLoggedIn',
 ]
 
+const EMPTY_FORM = {
+  name: '',
+  description: '',
+  event_types: ['LogonFailed'],
+  threshold: 5,
+  window_minutes: 5,
+  action: 'store',
+  webhook_url: '',
+  email_to: '',
+}
+
 function AlertRules() {
   const [rules, setRules] = useState([])
   const [showForm, setShowForm] = useState(false)
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    event_types: ['LogonFailed'],
-    threshold: 5,
-    window_minutes: 5,
-    action: 'store',
-    webhook_url: '',
-    email_to: '',
-  })
+  const [editingId, setEditingId] = useState(null)
+  const [formData, setFormData] = useState(EMPTY_FORM)
+  const [customEventType, setCustomEventType] = useState('')
   const [loading, setLoading] = useState(false)
   const [userRole, setUserRole] = useState(null)
   const [errors, setErrors] = useState({})
 
   useEffect(() => {
     loadRules()
-    const token = localStorage.getItem('token')
-    if (!token) return
-    try {
-      setUserRole(jwtDecode(token).role)
-    } catch {
-      setUserRole(null)
-    }
+    // Low #27: role is now derived from /auth/me (cookie-sent) instead of a
+    // client-side JWT decode. The HttpOnly cookie carries the token; the
+    // server resolves the canonical role claim and returns it. We don't
+    // trust client-side decoded claims.
+    let cancelled = false
+    authApi.me()
+      .then((res) => { if (!cancelled) setUserRole(res.data?.role || null) })
+      .catch(() => { if (!cancelled) setUserRole(null) })
+    return () => { cancelled = true }
   }, [])
 
   const loadRules = async () => {
@@ -63,13 +68,44 @@ function AlertRules() {
     e.preventDefault()
     if (!validate()) return
     try {
-      await alerts.create(formData)
+      if (editingId) {
+        await alerts.update(editingId, formData)
+      } else {
+        await alerts.create(formData)
+      }
       setShowForm(false)
-      setFormData({ name: '', description: '', event_types: ['LogonFailed'], threshold: 5, window_minutes: 5, action: 'store', webhook_url: '', email_to: '' })
+      setEditingId(null)
+      setFormData(EMPTY_FORM)
+      setCustomEventType('')
       loadRules()
     } catch (err) {
-      setErrors({ submit: 'Failed to create rule: ' + (err.response?.data?.detail || err.message) })
+      setErrors({ submit: 'Failed to save rule: ' + (err.response?.data?.detail || err.message) })
     }
+  }
+
+  const handleEdit = (rule) => {
+    setEditingId(rule.id)
+    setFormData({
+      name: rule.name || '',
+      description: rule.description || '',
+      event_types: Array.isArray(rule.event_types) ? rule.event_types : [],
+      threshold: rule.threshold ?? 5,
+      window_minutes: rule.window_minutes ?? 5,
+      action: rule.action || 'store',
+      webhook_url: rule.webhook_url || '',
+      email_to: rule.email_to || '',
+    })
+    setCustomEventType('')
+    setErrors({})
+    setShowForm(true)
+  }
+
+  const closeForm = () => {
+    setShowForm(false)
+    setEditingId(null)
+    setFormData(EMPTY_FORM)
+    setCustomEventType('')
+    setErrors({})
   }
 
   const toggleEventType = (et) => {
@@ -78,6 +114,27 @@ function AlertRules() {
       event_types: prev.event_types.includes(et)
         ? prev.event_types.filter((x) => x !== et)
         : [...prev.event_types, et],
+    }))
+  }
+
+  // Medium #23: let users add their own event types beyond the hard-coded
+  // suggestions — the alert engine accepts arbitrary strings, so the UI
+  // shouldn't artificially limit the vocabulary.
+  const addCustomEventType = () => {
+    const trimmed = customEventType.trim()
+    if (!trimmed) return
+    if (formData.event_types.includes(trimmed)) {
+      setCustomEventType('')
+      return
+    }
+    setFormData((prev) => ({ ...prev, event_types: [...prev.event_types, trimmed] }))
+    setCustomEventType('')
+  }
+
+  const removeEventType = (et) => {
+    setFormData((prev) => ({
+      ...prev,
+      event_types: prev.event_types.filter((x) => x !== et),
     }))
   }
 
@@ -91,7 +148,7 @@ function AlertRules() {
           </p>
         </div>
         {userRole === 'Admin' && (
-          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
+          <button className="btn btn-primary" onClick={() => (showForm ? closeForm() : setShowForm(true))}>
             {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
             {showForm ? 'Cancel' : 'New rule'}
           </button>
@@ -103,7 +160,7 @@ function AlertRules() {
           <div className="flex items-center gap-2 mb-5">
             <Zap className="w-5 h-5" style={{ color: 'var(--color-primary)' }} />
             <h2 className="font-display text-lg" style={{ color: 'var(--color-ink)' }}>
-              New alert rule
+              {editingId ? 'Edit alert rule' : 'New alert rule'}
             </h2>
           </div>
 
@@ -214,6 +271,52 @@ function AlertRules() {
                   </button>
                 ))}
               </div>
+
+              {/* Medium #23: allow custom event types beyond the suggestions */}
+              <div className="flex gap-2 mt-3">
+                <input
+                  type="text"
+                  value={customEventType}
+                  onChange={(e) => setCustomEventType(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      addCustomEventType()
+                    }
+                  }}
+                  className="input flex-1"
+                  placeholder="Add custom event type (e.g. SuspiciousProcessDetected)"
+                />
+                <button
+                  type="button"
+                  onClick={addCustomEventType}
+                  className="btn btn-secondary"
+                  disabled={!customEventType.trim()}
+                >
+                  <Plus className="w-4 h-4" /> Add
+                </button>
+              </div>
+
+              {formData.event_types.filter((et) => !EVENT_TYPE_SUGGESTIONS.includes(et)).length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {formData.event_types
+                    .filter((et) => !EVENT_TYPE_SUGGESTIONS.includes(et))
+                    .map((et) => (
+                      <span key={et} className="badge-pill text-xs flex items-center gap-1">
+                        {et}
+                        <button
+                          type="button"
+                          onClick={() => removeEventType(et)}
+                          aria-label={`Remove ${et}`}
+                          style={{ background: 'transparent', border: 0, padding: 0, cursor: 'pointer', color: 'inherit' }}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                </div>
+              )}
+
               {errors.event_types && <p className="text-xs mt-1" style={{ color: 'var(--color-error)' }}>{errors.event_types}</p>}
             </div>
 
@@ -231,10 +334,10 @@ function AlertRules() {
             )}
 
             <div className="flex justify-end gap-3">
-              <button type="button" onClick={() => setShowForm(false)} className="btn btn-secondary">Cancel</button>
+              <button type="button" onClick={closeForm} className="btn btn-secondary">Cancel</button>
               <button type="submit" className="btn btn-primary">
                 <Bell className="w-4 h-4" />
-                Save rule
+                {editingId ? 'Save changes' : 'Save rule'}
               </button>
             </div>
           </form>
@@ -266,6 +369,12 @@ function AlertRules() {
                     <span className={clsx('badge-pill', rule.enabled ? 'badge-active' : 'badge-muted')}>
                       {rule.enabled ? 'Active' : 'Disabled'}
                     </span>
+                    {rule.tenant && rule.tenant !== '*' && (
+                      <span className="badge-pill badge-muted">tenant: {rule.tenant}</span>
+                    )}
+                    {rule.tenant === '*' && (
+                      <span className="badge-pill badge-muted">all tenants</span>
+                    )}
                   </div>
                   {rule.description && (
                     <p className="text-sm mb-3" style={{ color: 'var(--color-muted)' }}>{rule.description}</p>
@@ -292,6 +401,20 @@ function AlertRules() {
                     </div>
                   )}
                 </div>
+
+                {/* Spec §7 Alert Rules: "ดู/สร้าง/แก้ไข" — edit only, no delete. */}
+                {userRole === 'Admin' && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => handleEdit(rule)}
+                      className="btn btn-ghost"
+                      aria-label="Edit rule"
+                      title="Edit rule"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
             </article>
           ))

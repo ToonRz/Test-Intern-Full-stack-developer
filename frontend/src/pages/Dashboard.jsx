@@ -47,6 +47,18 @@ function Dashboard() {
   const [range, setRange] = useState('24h')
   const [source, setSource] = useState('')
   const [tenant, setTenant] = useState('')
+  // Low #25: dropdown sourced from /logs/facets so operators can't typo a
+  // tenant name and silently get zero results (the old free-text input did
+  // exactly that).
+  const [tenantOptions, setTenantOptions] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+    logs.facets()
+      .then((res) => { if (!cancelled) setTenantOptions(res.data?.tenants || []) })
+      .catch(() => { if (!cancelled) setTenantOptions([]) })
+    return () => { cancelled = true }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -141,7 +153,12 @@ function Dashboard() {
 
         <div className="flex-1 min-w-[160px]">
           <label className="label-overline">Tenant</label>
-          <input className="input" placeholder="(all)" value={tenant} onChange={(e) => setTenant(e.target.value)} />
+          <select className="input" value={tenant} onChange={(e) => setTenant(e.target.value)}>
+            <option value="">(all)</option>
+            {tenantOptions.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
         </div>
       </section>
 

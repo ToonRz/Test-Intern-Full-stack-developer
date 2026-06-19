@@ -1,12 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  UserPlus, Loader2, Trash2, X, Shield, ShieldCheck, KeyRound,
+  UserPlus, Loader2, Trash2, X, Shield, ShieldCheck, KeyRound, Pencil,
 } from 'lucide-react'
 import { users, tenants } from '../services/api'
 import clsx from 'clsx'
 
 const EMPTY_FORM = {
   username: '',
+  email: '',
+  password: '',
+  role: 'Viewer',
+  tenant: '',
+}
+
+const EMPTY_EDIT = {
   email: '',
   password: '',
   role: 'Viewer',
@@ -22,6 +29,14 @@ function UserManagement() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [deletingId, setDeletingId] = useState(null)
+
+  // Medium #18: edit-modal state. Reuses the PATCH /users/{id} endpoint
+  // exposed by the API client (`users.update`). Password is optional and
+  // sent only when the operator typed one — the backend hashes it then.
+  const [editingUser, setEditingUser] = useState(null)
+  const [editForm, setEditForm] = useState(EMPTY_EDIT)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editError, setEditError] = useState('')
 
   const loadUsers = useCallback(async () => {
     setLoading(true)
@@ -61,16 +76,10 @@ function UserManagement() {
     setCreating(true)
     setError('')
     try {
-      // Map the form's "all tenants" sentinel to the server's `*` value when
-      // the role is Admin and the user explicitly chose to grant cross-tenant
-      // access. Otherwise pass the chosen tenant (or empty string for Viewers
-      // who haven't picked one — the backend defaults to `""` which means
-      // "assign on first login" / no access yet).
-      const payload = { ...formData }
-      if (formData.role === 'Admin' && formData.tenant === '*') {
-        payload.tenant = '*'
-      }
-      await users.create(payload)
+      // formData already carries "*" verbatim from the <select> when the
+      // Admin picks "All tenants" — the backend accepts that sentinel for
+      // the Admin role and rejects it for Viewer (Medium #16).
+      await users.create(formData)
       closeForm()
       loadUsers()
     } catch (err) {
@@ -93,7 +102,45 @@ function UserManagement() {
     }
   }
 
+  const openEdit = (u) => {
+    setEditingUser(u)
+    setEditForm({
+      email: u.email || '',
+      password: '',
+      role: u.role,
+      tenant: u.tenant || '',
+    })
+    setEditError('')
+  }
+
+  const closeEdit = () => {
+    setEditingUser(null)
+    setEditForm(EMPTY_EDIT)
+    setEditError('')
+  }
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault()
+    if (!editingUser) return
+    setEditLoading(true)
+    setEditError('')
+    try {
+      // Only send the fields the operator actually touched — the PATCH
+      // endpoint treats each as optional.
+      const payload = { role: editForm.role, tenant: editForm.tenant, email: editForm.email }
+      if (editForm.password) payload.password = editForm.password
+      await users.update(editingUser.id, payload)
+      closeEdit()
+      loadUsers()
+    } catch (err) {
+      setEditError(err.response?.data?.detail || 'Failed to update user')
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
   const isAdmin = formData.role === 'Admin'
+  const isEditAdmin = editForm.role === 'Admin'
 
   return (
     <div className="space-y-6">
@@ -173,18 +220,19 @@ function UserManagement() {
                   value={formData.tenant}
                   onChange={(e) => setFormData({ ...formData, tenant: e.target.value })}
                   className="input"
-                  placeholder={isAdmin ? 'Leave empty for all tenants' : 'demoA'}
+                  placeholder={isAdmin ? '* or demoA' : 'demoA'}
+                  required
+                  minLength={1}
                 />
               ) : (
                 <select
                   value={formData.tenant}
                   onChange={(e) => setFormData({ ...formData, tenant: e.target.value })}
                   className="input"
-                  required={!isAdmin}
+                  required
                 >
                   {isAdmin && <option value="*">All tenants (cross-tenant access)</option>}
-                  {isAdmin && <option value="">— None —</option>}
-                  {!isAdmin && <option value="">Select tenant…</option>}
+                  <option value="" disabled>Select tenant…</option>
                   {tenantList.map((t) => (
                     <option key={t.id} value={t.name}>{t.name}</option>
                   ))}
@@ -266,18 +314,28 @@ function UserManagement() {
                     {u.created_at ? new Date(u.created_at).toLocaleDateString() : '-'}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    <button
-                      onClick={() => handleDelete(u.id)}
-                      disabled={deletingId === u.id}
-                      className="btn btn-ghost"
-                      style={{ color: 'var(--color-error)' }}
-                      aria-label="Delete"
-                      title="Delete user"
-                    >
-                      {deletingId === u.id
-                        ? <Loader2 className="w-4 h-4 animate-spin" />
-                        : <Trash2 className="w-4 h-4" />}
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => openEdit(u)}
+                        className="btn btn-ghost"
+                        aria-label="Edit user"
+                        title="Edit user"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(u.id)}
+                        disabled={deletingId === u.id}
+                        className="btn btn-ghost"
+                        style={{ color: 'var(--color-error)' }}
+                        aria-label="Delete"
+                        title="Delete user"
+                      >
+                        {deletingId === u.id
+                          ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : <Trash2 className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -285,6 +343,124 @@ function UserManagement() {
           </table>
         </div>
       </section>
+
+      {/* Medium #18: edit modal — lets an admin change email/role/tenant
+          and rotate the password without leaving the user list. */}
+      {editingUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(15, 23, 42, 0.45)' }}
+          onClick={closeEdit}
+        >
+          <div
+            className="card w-full max-w-lg"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-user-title"
+          >
+            <header className="flex items-center justify-between mb-4">
+              <h2 id="edit-user-title" className="font-display text-lg" style={{ color: 'var(--color-ink)' }}>
+                Edit user — {editingUser.username}
+              </h2>
+              <button onClick={closeEdit} className="btn btn-ghost" aria-label="Close">
+                <X className="w-4 h-4" />
+              </button>
+            </header>
+
+            <form onSubmit={handleEditSubmit} className="space-y-4">
+              <div>
+                <label className="label-overline">Email</label>
+                <input
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                  className="input"
+                  autoComplete="off"
+                />
+              </div>
+
+              <div>
+                <label className="label-overline">Role</label>
+                <select
+                  value={editForm.role}
+                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                  className="input"
+                >
+                  <option value="Viewer">Viewer</option>
+                  <option value="Admin">Admin</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="label-overline">
+                  Tenant {isEditAdmin ? '(or "All tenants" for cross-tenant access)' : '*'}
+                </label>
+                {tenantList.length === 0 ? (
+                  <input
+                    value={editForm.tenant}
+                    onChange={(e) => setEditForm({ ...editForm, tenant: e.target.value })}
+                    className="input"
+                    placeholder={isEditAdmin ? '* or demoA' : 'demoA'}
+                    required
+                    minLength={1}
+                  />
+                ) : (
+                  <select
+                    value={editForm.tenant}
+                    onChange={(e) => setEditForm({ ...editForm, tenant: e.target.value })}
+                    className="input"
+                    required
+                  >
+                    {isEditAdmin && <option value="*">All tenants (cross-tenant access)</option>}
+                    {tenantList.map((t) => (
+                      <option key={t.id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="label-overline">New password (leave blank to keep current)</label>
+                <div className="relative">
+                  <KeyRound className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--color-muted)' }} />
+                  <input
+                    type="password"
+                    value={editForm.password}
+                    onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                    className="input"
+                    style={{ paddingLeft: '2.25rem' }}
+                    autoComplete="new-password"
+                    minLength={editForm.password ? 8 : undefined}
+                    placeholder="••••••••"
+                  />
+                </div>
+              </div>
+
+              {editError && (
+                <div
+                  className="text-sm px-3 py-2 rounded-md"
+                  style={{
+                    backgroundColor: 'rgba(198, 69, 69, 0.10)',
+                    color: 'var(--color-error)',
+                    border: '1px solid rgba(198, 69, 69, 0.25)',
+                  }}
+                >
+                  {editError}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3">
+                <button type="button" onClick={closeEdit} className="btn btn-secondary">Cancel</button>
+                <button type="submit" disabled={editLoading} className="btn btn-primary">
+                  {editLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pencil className="w-4 h-4" />}
+                  Save changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

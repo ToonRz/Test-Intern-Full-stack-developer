@@ -58,9 +58,10 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app/backend
+      - ./ingest:/app/ingest
       - ./tests:/app/tests
       - ./pytest.ini:/app/pytest.ini
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s

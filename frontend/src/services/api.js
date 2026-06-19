@@ -28,13 +28,17 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
   timeout: 30000,
   paramsSerializer: serializeParams,
+  // Low #27 FIXED: send cookies on cross-origin requests so the backend's
+  // HttpOnly Set-Cookie on /auth/login is stored and replayed on subsequent
+  // API calls. Without this, axios drops Set-Cookie headers by default.
+  withCredentials: true,
 })
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
+  // Low #27: no manual Authorization header — the HttpOnly cookie is sent
+  // automatically by the browser on same-origin / configured-CORS requests.
+  // This was previously reading from localStorage, which made the JWT
+  // reachable by any XSS payload. The HttpOnly flag closes that hole.
   return config
 })
 
@@ -43,11 +47,11 @@ api.interceptors.response.use(
   (error) => {
     const status = error.response?.status
     if (status === 401) {
-      localStorage.removeItem('token')
-      // Avoid full-page reload loops when already on /login.
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
-      }
+      // Low #26: signal an auth-logout event instead of doing a hard reload.
+      // The AuthEvents bridge inside <BrowserRouter> (App.jsx) catches this
+      // and calls react-router's navigate(), so we keep client state and
+      // avoid the visible "flash to white" of `window.location.href`.
+      window.dispatchEvent(new CustomEvent('auth:logout'))
     }
     return Promise.reject(error)
   },
@@ -55,6 +59,7 @@ api.interceptors.response.use(
 
 export const auth = {
   login: (username, password) => api.post('/auth/login', { username, password }),
+  logout: () => api.post('/auth/logout'),
   me: () => api.get('/auth/me'),
 }
 

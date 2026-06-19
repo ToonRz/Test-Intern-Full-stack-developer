@@ -43,13 +43,13 @@ jobs:
         run: npm install --prefix frontend
 
       - name: Run backend tests
-        run: pytest tests/ -v --tb=short || true
+        run: pytest tests/ -v --tb=short
 
       - name: Build frontend
         run: npm run build --prefix frontend
 
       - name: Run frontend tests
-        run: npm test --prefix frontend -- --run || true
+        run: npm test --prefix frontend -- --run
 
   # ── Security Scan ───────────────────────────────────────────────────────
   security:
@@ -79,7 +79,7 @@ jobs:
         with:
           directory: ./backend
           level: HIGH
-          format: txt || true
+          format: txt
 
   # ── Build & Push Docker Images ─────────────────────────────────────────
   build:

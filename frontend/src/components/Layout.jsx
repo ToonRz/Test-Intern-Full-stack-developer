@@ -11,7 +11,7 @@ import {
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { jwtDecode } from 'jwt-decode'
+import { auth as authApi } from '../services/api'
 
 // 4-spoke radial spike mark — visual stand-in for the Anthropic wordmark.
 function SpikeMark({ size = 18, color = 'currentColor' }) {
@@ -27,15 +27,16 @@ function Layout({ children, onLogout }) {
   const [user, setUser] = useState(null)
   const [mobileOpen, setMobileOpen] = useState(false)
 
+  // Low #27: replaced jwtDecode(localStorage.token) with a server-side
+  // /auth/me round-trip. The HttpOnly cookie is attached automatically so
+  // the backend resolves the user from the JWT and returns the canonical
+  // profile (we don't trust client-side decoded claims).
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) return
-    try {
-      const payload = jwtDecode(token)
-      setUser(payload)
-    } catch {
-      setUser(null)
-    }
+    let cancelled = false
+    authApi.me()
+      .then((res) => { if (!cancelled) setUser(res.data) })
+      .catch(() => { if (!cancelled) setUser(null) })
+    return () => { cancelled = true }
   }, [])
 
   const navItems = [
@@ -91,16 +92,14 @@ function Layout({ children, onLogout }) {
         {/* User pill + sign out */}
         <div className="hidden md:flex items-center gap-3">
           {user && (
-            <div className="flex items-center gap-3">
-              <div className="text-right leading-tight">
-                <div className="text-sm font-medium" style={{ color: 'var(--color-ink)' }}>
-                  {user.username}
-                </div>
-                <span className={clsx('badge-pill text-xs', user.role === 'Admin' && 'badge-coral')}>
-                  {user.role}
-                </span>
-              </div>
-            </div>
+            <span
+              className={clsx(
+                'badge-pill text-sm',
+                user.role === 'Admin' ? 'badge-coral' : 'badge-teal'
+              )}
+            >
+              {user.role}
+            </span>
           )}
           <button onClick={onLogout} className="btn btn-text-link" title="Sign out">
             <LogOut className="w-4 h-4" />

@@ -7,6 +7,7 @@ import * as api from '../services/api'
 vi.mock('../services/api', () => ({
   logs: {
     stats: vi.fn(),
+    facets: vi.fn(),
   },
   alerts: {
     triggered: vi.fn(),
@@ -35,6 +36,7 @@ describe('Dashboard Page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.logs.stats.mockResolvedValue({ data: emptyStats })
+    api.logs.facets.mockResolvedValue({ data: { tenants: [] } })
     api.alerts.triggered.mockResolvedValue({ data: { alerts: [] } })
   })
 

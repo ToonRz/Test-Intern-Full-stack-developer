@@ -299,6 +299,14 @@
     text-transform: uppercase;
   }
 
+  .badge-teal {
+    background-color: var(--color-accent-amber);
+    color: var(--color-on-primary);
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
   .badge-active {
     background-color: var(--color-accent-amber);
     color: var(--color-on-primary);

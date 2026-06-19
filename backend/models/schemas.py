@@ -37,7 +37,12 @@ class NormalizedLog(BaseModel):
     rule_id: Optional[str] = None
     cloud: Optional[Cloud] = None
     raw: Optional[Any] = None
-    _tags: List[str] = []
+    # Spec §3 names this field "_tags" with a leading underscore, but Pydantic
+    # v2 treats underscore-prefixed names as private attributes and silently
+    # drops the value on validation. Use a real field name internally with
+    # _tags as both the input and output alias so the on-the-wire contract
+    # (and DB column name) stays unchanged.
+    tags: List[str] = Field(default=[], alias="_tags", serialization_alias="_tags")
 
 
 class LogIngest(BaseModel):
@@ -62,6 +67,9 @@ class LogIngest(BaseModel):
 
 class AlertRule(BaseModel):
     id: Optional[int] = None
+    # tenant="*" creates a global rule that fires for every tenant's logs;
+    # otherwise the rule is scoped to that specific tenant only (spec §6).
+    tenant: Optional[str] = None
     name: str
     description: Optional[str] = None
     event_types: List[str] = ["LogonFailed", "app_login_failed"]

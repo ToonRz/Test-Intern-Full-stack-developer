@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import asyncio
+import re
 import sys
 import os
 import logging
@@ -19,13 +20,17 @@ if _PROJECT_ROOT not in sys.path:
 from backend.config import get_settings
 from backend.storage.database import init_db, async_session, LogEntry
 from backend.routers import auth, ingest, logs, alerts, tenants, users
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from backend.auth.jwt import get_password_hash
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from backend.rate_limit import limiter
 
 settings = get_settings()
 logger = logging.getLogger("log-management")
+
+# High #7: RFC6587 §3.4.1 octet-counted framing — leading "<digits> " then
+# exactly N bytes of message. Used by rsyslog/syslog-ng default TCP config.
+_OCTET_COUNTED = re.compile(rb"^(\d+) ")
 
 # Refuse to boot with insecure defaults so SECRET_KEY isn't silently weak.
 if settings.SECRET_KEY == "change-me-in-production" or len(settings.SECRET_KEY) < 32:
@@ -35,9 +40,6 @@ if settings.SECRET_KEY == "change-me-in-production" or len(settings.SECRET_KEY) 
             "Set SECRET_KEY in .env to a value generated via `openssl rand -hex 32`."
         )
     logger.warning("SECRET_KEY is using the insecure development default — do not run with DEBUG=False in prod.")
-
-# Rate limiter — wired via app.state so slowapi decorators work.
-limiter = Limiter(key_func=get_remote_address)
 
 
 async def _retention_loop():
@@ -83,6 +85,9 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     await seed_defaults()
+    # High #6: instrument the app after it's defined (was at module level,
+    # fragile if anyone reorders imports above).
+    setup_telemetry()
     app.state.syslog_task = asyncio.create_task(start_syslog_listener())
     app.state.retention_task = asyncio.create_task(_retention_loop())
     yield
@@ -185,9 +190,6 @@ def setup_telemetry():
         pass
 
 
-setup_telemetry()
-
-
 async def seed_defaults():
     """Seed default users and the spec §8 Login Failed Brute-Force alert rule.
 
@@ -200,11 +202,16 @@ async def seed_defaults():
 
 
 async def _seed_users():
-    """Seed default Admin and Viewer users (only when DB is empty AND debug seed enabled)."""
+    """Seed default Admin and Viewer users (only when DB is empty AND debug seed enabled).
+
+    Default for SEED_DEMO_USERS is "false" so a production deployment that
+    forgets to set the env var will NOT auto-create users with the well-known
+    passwords admin123 / viewer123. Set to "true" for local dev / CI.
+    """
     from backend.storage.database import UserDB
     from sqlalchemy import select, func
 
-    if os.getenv("SEED_DEMO_USERS", "true").lower() not in ("1", "true", "yes"):
+    if os.getenv("SEED_DEMO_USERS", "false").lower() not in ("1", "true", "yes"):
         return
 
     async with async_session() as db:
@@ -217,14 +224,14 @@ async def _seed_users():
             email="admin@example.com",
             role="Admin",
             tenant="*",
-            hashed_password=_bcrypt_hash(os.getenv("ADMIN_PASSWORD", "admin123"))
+            hashed_password=get_password_hash(os.getenv("ADMIN_PASSWORD", "admin123"))
         )
         viewer = UserDB(
             username="viewer",
             email="viewer@example.com",
             role="Viewer",
             tenant="demoA",
-            hashed_password=_bcrypt_hash(os.getenv("VIEWER_PASSWORD", "viewer123"))
+            hashed_password=get_password_hash(os.getenv("VIEWER_PASSWORD", "viewer123"))
         )
         db.add_all([admin, viewer])
         await db.commit()
@@ -245,6 +252,7 @@ async def _seed_default_alert_rule():
             return
 
         rule = AlertRuleDB(
+            tenant="*",  # global rule — fires for failed logins from any tenant (spec §6)
             name="Login Failed Brute-Force",
             description=(
                 "Spec §8: 5 failed login events from the same src_ip within a "
@@ -263,14 +271,9 @@ async def _seed_default_alert_rule():
         logger.info("Seeded default Login Failed Brute-Force alert rule")
 
 
-def _bcrypt_hash(password: str) -> str:
-    """Hash a password — pre-hash with SHA256 if >72 bytes to avoid bcrypt silent truncation."""
-    import bcrypt
-    pw = password.encode("utf-8")
-    if len(pw) > 72:
-        import hashlib
-        pw = hashlib.sha256(pw).hexdigest().encode("utf-8")
-    return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("utf-8")
+def _bcrypt_hash(password: str) -> str:  # pragma: no cover — kept for back-compat
+    """Deprecated — use auth.jwt.get_password_hash() instead."""
+    return get_password_hash(password)
 
 
 # ── Syslog Listener (UDP + TCP, spec §5.1) ───────────────────────────────
@@ -301,7 +304,7 @@ async def _persist_log(normalized) -> int:
             rule_id=normalized.rule_id,
             cloud=normalized.cloud.model_dump() if normalized.cloud else None,
             raw=normalized.raw,
-            _tags=normalized._tags or None,
+            _tags=normalized.tags or None,
             timestamp=_parse_timestamp(normalized.timestamp),
         )
         db.add(entry)
@@ -358,6 +361,10 @@ async def start_syslog_listener():
         allows the same port to be bound for UDP and TCP simultaneously — Docker
         maps the same external port to both protocols via separate `udp`/`tcp`
         suffixes in docker-compose.yml.
+
+        High #7: now actually implements both framings — production rsyslog /
+        syslog-ng default to octet-counted (RFC6587 §3.4.1) but legacy senders
+        still use LF-delimited, so we autodetect per buffer.
         """
         server = await asyncio.start_server(_handle_tcp_client, host=host, port=port)
         logger.info("Syslog TCP listener bound on %s:%s", host, port)
@@ -365,12 +372,37 @@ async def start_syslog_listener():
             await server.serve_forever()
 
     async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        # High #7: support both RFC6587 octet-counted and LF-delimited framing
+        # in one TCP connection — autodetect by inspecting the head of the buffer.
+        buf = b""
         try:
             while True:
-                data = await reader.readuntil(b"\n")
-                line = data.decode("utf-8", errors="ignore").strip()
-                if line:
-                    await _handle_syslog_line(line)
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while buf:
+                    # Octet-counted: leading "<digits> " then exactly N bytes.
+                    m = _OCTET_COUNTED.match(buf)
+                    if m:
+                        count = int(m.group(1))
+                        frame_end = m.end() + count
+                        if len(buf) < frame_end:
+                            break  # need more bytes before we can deliver this frame
+                        msg = buf[m.end():frame_end]
+                        buf = buf[frame_end:]
+                        line = msg.decode("utf-8", errors="ignore").strip()
+                        if line:
+                            await _handle_syslog_line(line)
+                        continue
+                    # LF-delimited fallback: one record per newline.
+                    nl = buf.find(b"\n")
+                    if nl == -1:
+                        break  # incomplete record — wait for more bytes
+                    line = buf[:nl].decode("utf-8", errors="ignore").strip()
+                    buf = buf[nl + 1:]
+                    if line:
+                        await _handle_syslog_line(line)
         except (asyncio.IncompleteReadError, ConnectionResetError):
             pass
         finally:

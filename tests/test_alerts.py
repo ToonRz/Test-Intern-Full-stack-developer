@@ -167,3 +167,178 @@ async def test_update_alert_requires_admin(client, viewer_token):
         headers={"Authorization": f"Bearer {viewer_token}"},
     )
     assert response.status_code == 403
+
+
+async def test_viewer_cannot_ack_cross_tenant_alert(client, viewer_token):
+    """Viewer cannot acknowledge an alert owned by another tenant (Critical #3).
+
+    Setup: seed Viewer tenant="demoA", then insert a TriggeredAlert owned by
+    tenant="otherB". The demoA viewer must not be able to ack it.
+    """
+    from datetime import datetime, timezone
+    from backend.storage.database import async_session, TriggeredAlertDB
+
+    async with async_session() as db:
+        alert = TriggeredAlertDB(
+            rule_id=1,
+            rule_name="Cross-tenant rule",
+            group_key="1.2.3.4:cross",
+            src_ip="1.2.3.4",
+            count=1,
+            unique_count=1,
+            severity="high",
+            first_seen=datetime.now(timezone.utc),
+            last_seen=datetime.now(timezone.utc),
+            tenant="otherB",
+            source="ad",
+            event_type="LogonFailed",
+            logs=[],
+            acknowledged=False,
+            triggered_at=datetime.now(timezone.utc),
+        )
+        db.add(alert)
+        await db.commit()
+        await db.refresh(alert)
+        other_alert_id = alert.id
+
+    response = await client.post(
+        f"/api/v1/alerts/{other_alert_id}/acknowledge",
+        headers={"Authorization": f"Bearer {viewer_token}"},
+    )
+    assert response.status_code == 403
+
+
+async def test_admin_can_ack_any_tenant_alert(client, admin_token):
+    """Admin (tenant='*') can acknowledge alerts from any tenant."""
+    from datetime import datetime, timezone
+    from backend.storage.database import async_session, TriggeredAlertDB
+
+    async with async_session() as db:
+        alert = TriggeredAlertDB(
+            rule_id=1,
+            rule_name="Any-tenant rule",
+            group_key="5.6.7.8:any",
+            src_ip="5.6.7.8",
+            count=1,
+            unique_count=1,
+            severity="high",
+            first_seen=datetime.now(timezone.utc),
+            last_seen=datetime.now(timezone.utc),
+            tenant="otherB",
+            source="ad",
+            event_type="LogonFailed",
+            logs=[],
+            acknowledged=False,
+            triggered_at=datetime.now(timezone.utc),
+        )
+        db.add(alert)
+        await db.commit()
+        await db.refresh(alert)
+        alert_id = alert.id
+
+    response = await client.post(
+        f"/api/v1/alerts/{alert_id}/acknowledge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "acknowledged"
+
+
+async def test_viewer_only_sees_own_tenant_rules(client, viewer_token):
+    """Critical #2 — Viewer must only see alert rules for their tenant or '*'."""
+    from backend.storage.database import async_session, AlertRuleDB
+
+    async with async_session() as db:
+        db.add(AlertRuleDB(
+            tenant="demoA", name="A-rule",
+            event_types=["LogonFailed"], threshold=5, window_minutes=5,
+            group_by="src_ip", action="store", enabled=True,
+        ))
+        db.add(AlertRuleDB(
+            tenant="otherB", name="B-rule",
+            event_types=["LogonFailed"], threshold=5, window_minutes=5,
+            group_by="src_ip", action="store", enabled=True,
+        ))
+        db.add(AlertRuleDB(
+            tenant="*", name="global-rule",
+            event_types=["LogonFailed"], threshold=5, window_minutes=5,
+            group_by="src_ip", action="store", enabled=True,
+        ))
+        await db.commit()
+
+    response = await client.get(
+        "/api/v1/alerts",
+        headers={"Authorization": f"Bearer {viewer_token}"},
+    )
+    assert response.status_code == 200
+    names = {r["name"] for r in response.json()["rules"]}
+    assert "A-rule" in names
+    assert "global-rule" in names
+    assert "B-rule" not in names, f"Viewer must not see otherB rule, got: {names}"
+
+
+async def test_alert_engine_does_not_cross_trigger(client, admin_token):
+    """Critical #2 — a tenant-scoped rule must not fire on another tenant's logs."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from backend.storage.database import (
+        async_session, AlertRuleDB, LogEntry, TriggeredAlertDB,
+    )
+
+    # Create a tenant-scoped rule for tenant="demoA".
+    async with async_session() as db:
+        scoped_rule = AlertRuleDB(
+            tenant="demoA", name="Scoped-only-A",
+            event_types=["LogonFailed"], threshold=3, window_minutes=5,
+            group_by="src_ip", action="store", enabled=True,
+        )
+        db.add(scoped_rule)
+        await db.commit()
+        await db.refresh(scoped_rule)
+        rule_id = scoped_rule.id
+
+        # Ingest 3 failed-login logs under tenant="otherB" — should NOT trigger.
+        now = datetime.now(timezone.utc)
+        for i in range(3):
+            db.add(LogEntry(
+                tenant="otherB",
+                source="ad",
+                event_type="LogonFailed",
+                severity=7,
+                src_ip="9.9.9.9",
+                timestamp=now - timedelta(seconds=i),
+                raw={},
+            ))
+        await db.commit()
+
+        # Manually drive the alert engine for one of those logs.
+        from backend.services.alert_engine import AlertEngine
+        result = await db.execute(
+            select(LogEntry).where(LogEntry.tenant == "otherB").order_by(LogEntry.id.desc())
+        )
+        log = result.scalars().first()
+        engine = AlertEngine(db)
+        triggered = await engine.check_brute_force(log)
+        assert triggered is None, (
+            f"Scoped rule for demoA must not fire on otherB logs, got: {triggered}"
+        )
+
+        # Now ingest 3 failed-login logs under tenant="demoA" — SHOULD trigger.
+        for i in range(3):
+            db.add(LogEntry(
+                tenant="demoA",
+                source="ad",
+                event_type="LogonFailed",
+                severity=7,
+                src_ip="9.9.9.9",
+                timestamp=now - timedelta(seconds=i),
+                raw={},
+            ))
+        await db.commit()
+        result = await db.execute(
+            select(LogEntry).where(LogEntry.tenant == "demoA").order_by(LogEntry.id.desc())
+        )
+        log = result.scalars().first()
+        triggered = await engine.check_brute_force(log)
+        assert triggered is not None, "Rule scoped to demoA must trigger on demoA logs"
+        assert triggered.rule_id == rule_id

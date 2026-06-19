@@ -145,18 +145,25 @@ class EnrichmentService:
         rdns_hostname: Optional[str] = None
         tags: list[str] = []
 
-        # Try cache first
+        # Try cache first — High #8: on connection failure, drop the cached
+        # singleton so the next call recreates it instead of reusing a
+        # broken connection for the rest of the process lifetime.
         if cache:
-            cached_geo = await cache.hgetall(cache_key_geo)
-            if cached_geo:
-                geo = GeoIPResult(
-                    country=cached_geo.get('country'),
-                    city=cached_geo.get('city'),
-                    latitude=float(cached_geo['lat']) if cached_geo.get('lat') else None,
-                    longitude=float(cached_geo['lon']) if cached_geo.get('lon') else None,
-                    timezone=cached_geo.get('timezone'),
-                )
-            rdns_hostname = await cache.get(cache_key_rdns)
+            try:
+                cached_geo = await cache.hgetall(cache_key_geo)
+                if cached_geo:
+                    geo = GeoIPResult(
+                        country=cached_geo.get('country'),
+                        city=cached_geo.get('city'),
+                        latitude=float(cached_geo['lat']) if cached_geo.get('lat') else None,
+                        longitude=float(cached_geo['lon']) if cached_geo.get('lon') else None,
+                        timezone=cached_geo.get('timezone'),
+                    )
+                rdns_hostname = await cache.get(cache_key_rdns)
+            except (redis.ConnectionError, redis.TimeoutError, OSError):
+                # Reset singleton so the next request reconnects.
+                RedisCache._instance = None
+                cache = None
 
         # Cache miss — do actual lookups
         if geo is None:
@@ -167,18 +174,21 @@ class EnrichmentService:
 
         # Update cache
         if cache and src_ip:
-            if geo:
-                await cache.hset(cache_key_geo, mapping={
-                    'country': geo.country or '',
-                    'city': geo.city or '',
-                    'lat': str(geo.latitude) if geo.latitude else '',
-                    'lon': str(geo.longitude) if geo.longitude else '',
-                    'timezone': geo.timezone or '',
-                })
-                await cache.expire(cache_key_geo, cls.CACHE_TTL)
+            try:
+                if geo:
+                    await cache.hset(cache_key_geo, mapping={
+                        'country': geo.country or '',
+                        'city': geo.city or '',
+                        'lat': str(geo.latitude) if geo.latitude else '',
+                        'lon': str(geo.longitude) if geo.longitude else '',
+                        'timezone': geo.timezone or '',
+                    })
+                    await cache.expire(cache_key_geo, cls.CACHE_TTL)
 
-            if rdns_hostname:
-                await cache.set(cache_key_rdns, rdns_hostname, ex=cls.CACHE_TTL)
+                if rdns_hostname:
+                    await cache.set(cache_key_rdns, rdns_hostname, ex=cls.CACHE_TTL)
+            except (redis.ConnectionError, redis.TimeoutError, OSError):
+                RedisCache._instance = None
 
         # Auto-tag suspicious countries
         if geo and geo.country in SUSPICIOUS_COUNTRIES:

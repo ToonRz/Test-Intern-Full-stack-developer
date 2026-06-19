@@ -69,6 +69,12 @@ class LogEntry(Base):
         Index("idx_source_timestamp", "source", "timestamp"),
         Index("idx_geo_country", "geo_country"),
         Index("idx_src_ip_enriched", "src_ip", "geo_country"),
+        # Low #29: GIN index on `raw` requires the column type to be JSONB,
+        # not JSON — Postgres raises "data type json has no default operator
+        # class for access method gin" otherwise. Migration deferred: the
+        # current `JSON` column would need to be ALTER TYPE'd to JSONB first,
+        # which is a separate change. Documented in CODE_REVIEW.md — the
+        # slow `cast(raw as text) ILIKE` query remains in routers/logs.py.
     )
 
 
@@ -76,6 +82,11 @@ class AlertRuleDB(Base):
     __tablename__ = "alert_rules"
 
     id = Column(Integer, primary_key=True, index=True)
+    # tenant="*" means the rule applies to logs from every tenant (global rule);
+    # otherwise the rule only fires for logs whose tenant matches this column.
+    # Critical #2 — without this filter, rules from tenant A would trigger on
+    # tenant B's logs and notify the wrong operator.
+    tenant = Column(String, nullable=False, default="*", index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     event_types = Column(JSON, nullable=False)
@@ -133,6 +144,10 @@ class UserDB(Base):
     tenant = Column(String, nullable=False, index=True)
     hashed_password = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now)
+    # updated_at is bumped on every UPDATE; get_current_user compares it against
+    # the JWT `iat` so a token issued before the last role/tenant/password
+    # change is rejected (Critical #5 — privilege escalation after demote).
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
 class TenantDB(Base):
@@ -159,6 +174,45 @@ class TenantDB(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Lightweight idempotent migration: add columns introduced after the
+        # table's initial create_all. create_all is a no-op for existing
+        # tables, so we have to ALTER TABLE manually. Used for UserDB.updated_at
+        # (Critical #5 — JWT re-validation) and AlertRuleDB.tenant (Critical #2).
+        from sqlalchemy import inspect, text
+        from sqlalchemy.engine import Inspector
+
+        def _has_column(sync_conn, table: str, column: str) -> bool:
+            inspector = Inspector.from_engine(sync_conn)
+            return column in {c["name"] for c in inspector.get_columns(table)}
+
+        def _alter(sync_conn, dialect: str, table: str, column: str, ddl_postgres: str, ddl_sqlite: str) -> None:
+            if not _has_column(sync_conn, table, column):
+                stmt = ddl_postgres if dialect == "postgresql" else ddl_sqlite
+                sync_conn.execute(text(stmt))
+
+        dialect = engine.dialect.name
+        await conn.run_sync(
+            lambda sync_conn: _alter(
+                sync_conn, dialect, "users", "updated_at",
+                "ALTER TABLE users ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE",
+                "ALTER TABLE users ADD COLUMN updated_at TIMESTAMP",
+            )
+        )
+        await conn.run_sync(
+            lambda sync_conn: _alter(
+                sync_conn, dialect, "alert_rules", "tenant",
+                "ALTER TABLE alert_rules ADD COLUMN tenant VARCHAR NOT NULL DEFAULT '*'",
+                "ALTER TABLE alert_rules ADD COLUMN tenant VARCHAR NOT NULL DEFAULT '*'",
+            )
+        )
+        # Index for tenant-scoped alert rule lookups (Critical #2).
+        if dialect == "postgresql":
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules (tenant)"
+            ))
+            # Low #29: GIN index requires the column to be JSONB. The current
+            # `raw` column is JSON (created by SQLAlchemy's generic JSON
+            # type). Migrating to JSONB is a separate change; deferring.
 
 
 async def get_db() -> AsyncSession:

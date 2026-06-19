@@ -31,8 +31,12 @@ function Login({ onLogin }) {
     setError('')
     setLoading(true)
     try {
-      const res = await auth.login(username, password)
-      onLogin(res.data.access_token)
+      // Low #27: the server-side /auth/login response sets an HttpOnly cookie
+      // via Set-Cookie. We don't receive — and don't need — the raw JWT in
+      // JavaScript anymore. The browser stores the cookie automatically and
+      // replays it on subsequent API calls (with axios's `withCredentials`).
+      await auth.login(username, password)
+      onLogin()
     } catch (err) {
       setError(err.response?.data?.detail || 'Invalid credentials')
     } finally {

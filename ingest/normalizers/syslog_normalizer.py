@@ -11,7 +11,11 @@ def parse_syslog(line: str, tenant: str = "default"):
     firewall_pattern = r'<(?:\d+)>(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(?:vendor=(\S+))?\s*(?:product=(\S+))?\s*(?:action=(\S+))?\s*(?:src=(\S+))?\s*(?:dst=(\S+))?\s*(?:spt=(\d+))?\s*(?:dpt=(\d+))?\s*(?:proto=(\S+))?\s*(?:msg=(\S+))?\s*(?:policy=(\S+))?'
     fw_match = re.match(firewall_pattern, line)
 
-    if fw_match:
+    if fw_match and (fw_match.group(3) or fw_match.group(4)):
+        # The firewall regex is permissive (every field is optional) so it can
+        # spuriously match a non-firewall line like a network-router syslog.
+        # Require at least vendor or product before claiming a firewall match —
+        # otherwise fall through to the network pattern below.
         timestamp_str, hostname, vendor, product, action, src_ip, dst_ip, spt, dpt, proto, msg, policy = fw_match.groups()
         try:
             timestamp = datetime.strptime(f"{datetime.now().year} {timestamp_str}", "%Y %b %d %H:%M:%S")

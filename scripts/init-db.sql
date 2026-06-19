@@ -1,7 +1,14 @@
 -- init-db.sql — Database initialization (spec §10).
--- Tables are also created by SQLAlchemy on first backend start, but having
--- them here means `make up` succeeds even when the API hasn't run yet.
--- IF NOT EXISTS keeps it idempotent against the SQLAlchemy bootstrap.
+-- This file is the source of truth for the on-disk schema. SQLAlchemy's
+-- Base.metadata.create_all is run by the API on startup, but Postgres
+-- needs the table to exist before the backend can connect — `make init`
+-- applies this file first so a fresh `make up` doesn't race the app.
+--
+-- If you change a model, also change the matching CREATE TABLE here and add
+-- a corresponding ALTER TABLE in init_db() in backend/storage/database.py
+-- (SQLAlchemy create_all is a no-op for existing tables).
+--
+-- Keep the column lists here and in backend/storage/database.py aligned.
 
 CREATE TABLE IF NOT EXISTS logs (
     id SERIAL PRIMARY KEY,
@@ -53,11 +60,18 @@ CREATE TABLE IF NOT EXISTS users (
     role VARCHAR(32) NOT NULL DEFAULT 'Viewer',
     tenant VARCHAR(64) NOT NULL,
     hashed_password VARCHAR(256) NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- updated_at is used by get_current_user() to invalidate tokens issued
+    -- before a role/tenant/password change (Critical #5).
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS alert_rules (
     id SERIAL PRIMARY KEY,
+    -- tenant="*" = global rule, fires for any tenant's logs (spec §6).
+    -- Without this column, a rule from tenant A would trigger on tenant B's
+    -- logs (Critical #2 — multi-tenant leakage).
+    tenant VARCHAR(64) NOT NULL DEFAULT '*',
     name VARCHAR(128) NOT NULL,
     description TEXT,
     event_types JSONB NOT NULL,
@@ -71,6 +85,8 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules(tenant);
 
 CREATE TABLE IF NOT EXISTS triggered_alerts (
     id SERIAL PRIMARY KEY,
@@ -93,3 +109,12 @@ CREATE TABLE IF NOT EXISTS triggered_alerts (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_group ON triggered_alerts(group_key, triggered_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_tenant_severity ON triggered_alerts(tenant, severity);
+
+CREATE TABLE IF NOT EXISTS tenants (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(64) UNIQUE NOT NULL,
+    schema_name VARCHAR(64) UNIQUE,
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);

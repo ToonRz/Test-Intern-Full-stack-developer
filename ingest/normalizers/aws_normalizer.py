@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 
 def normalize_aws(data: dict, tenant: str = None) -> dict:
     """Normalize AWS CloudTrail log per spec.md 4.5."""
-    cloud_data = data.get("cloud", {}) or {}
+    # `cloud` may arrive as a string, list, or other non-dict from malformed
+    # upstream payloads — coerce to dict so `.get()` can't crash the ingest.
+    cloud_data = data.get("cloud")
+    if not isinstance(cloud_data, dict):
+        cloud_data = {}
     tags = ["aws", "cloud"]
 
     return {

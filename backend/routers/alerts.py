@@ -15,13 +15,31 @@ async def get_alerts(
     current_user: UserDB = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """GET /alerts - get all alert rules per spec.md 5.3"""
-    engine = AlertEngine(db)
-    rules = await engine.get_alert_rules()
+    """GET /alerts - get all alert rules per spec.md 5.3.
+
+    Viewers only see rules scoped to their own tenant; admins see every rule
+    (Critical #2 — multi-tenant isolation).
+    """
+    from sqlalchemy import select, or_
+    from backend.storage.database import AlertRuleDB
+
+    if current_user.role == "Viewer":
+        result = await db.execute(
+            select(AlertRuleDB).where(
+                or_(
+                    AlertRuleDB.tenant == current_user.tenant,
+                    AlertRuleDB.tenant == "*",
+                )
+            ).order_by(AlertRuleDB.id)
+        )
+    else:
+        result = await db.execute(select(AlertRuleDB).order_by(AlertRuleDB.id))
+    rules = list(result.scalars().all())
     return {
         "rules": [
             {
                 "id": r.id,
+                "tenant": r.tenant,
                 "name": r.name,
                 "description": r.description,
                 "event_types": r.event_types,
@@ -46,8 +64,11 @@ async def create_alert(
     current_user: UserDB = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """POST /alerts - create new alert rule per spec.md 5.3 (Admin only)"""
+    """POST /alerts - create new alert rule per spec.md 5.3 (Admin only)."""
     engine = AlertEngine(db)
+    # Force Viewers out (require_admin already does that) and clamp the tenant
+    # for Admin creation: an empty/missing tenant defaults to global ("*").
+    rule.tenant = rule.tenant or "*"
     db_rule = await engine.create_alert_rule(rule)
     return {"id": db_rule.id, "status": "created", "rule": db_rule}
 
@@ -59,7 +80,13 @@ async def update_alert(
     current_user: UserDB = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """PUT /alerts/{id} - update an existing alert rule (Admin only)."""
+    """PUT /alerts/{id} - update an existing alert rule (Admin only).
+
+    Spec §5.3 deviation: spec only permits GET /alerts and POST /alerts. This
+    PUT exists because Medium #17 requires the Alert Rules UI to edit
+    existing rules (per spec §7 'ดู/สร้าง/แก้ไข'). Documented in
+    CODE_REVIEW.md N2; either remove or update spec.md §5.3.
+    """
     engine = AlertEngine(db)
     db_rule = await engine.update_alert_rule(rule_id, rule)
     if not db_rule:
@@ -73,7 +100,14 @@ async def delete_alert(
     current_user: UserDB = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """DELETE /alerts/{id} - delete an alert rule (Admin only)."""
+    """DELETE /alerts/{id} - delete an alert rule (Admin only).
+
+    Spec §5.3 deviation: spec does not authorize DELETE on alert rules.
+    Note that spec §7 'Alert Rules: ดู/สร้าง/แก้ไข' explicitly omits delete,
+    so this endpoint is unused by the UI (Medium #17 fix removed the delete
+    button). Documented in CODE_REVIEW.md N2 — kept available for ops use
+    but not exposed by the frontend.
+    """
     engine = AlertEngine(db)
     deleted = await engine.delete_alert_rule(rule_id)
     if not deleted:
@@ -146,7 +180,12 @@ async def get_triggered_alert_detail(
     current_user: UserDB = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """GET /alerts/triggered/{alert_id} - view alert group detail with all logs"""
+    """GET /alerts/triggered/{alert_id} - view alert group detail with all logs.
+
+    Spec §5.3 deviation: spec only permits GET /alerts/triggered (the list
+    view). This detail endpoint backs the AlertTriggered UI's row-expansion
+    behaviour. Documented in CODE_REVIEW.md N2.
+    """
     engine = AlertEngine(db)
 
     from sqlalchemy import select
@@ -220,7 +259,25 @@ async def acknowledge_alert(
     current_user: UserDB = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Acknowledge a triggered alert"""
+    """Acknowledge a triggered alert (Viewer scoped to own tenant per spec §6).
+
+    Spec §5.3 deviation: spec only permits GET /alerts, POST /alerts, and
+    GET /alerts/triggered. This acknowledge endpoint is required by
+    Critical #3 to let tenants mark alerts as handled. Documented in
+    CODE_REVIEW.md N2 — if strict spec compliance is required, replace
+    with a PATCH /alerts/triggered/{id} once spec §5.3 is updated.
+    """
+    from sqlalchemy import select
+    from backend.storage.database import TriggeredAlertDB
+
+    pre = (await db.execute(
+        select(TriggeredAlertDB).where(TriggeredAlertDB.id == alert_id)
+    )).scalar_one_or_none()
+    if not pre:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    if current_user.role == "Viewer" and pre.tenant != current_user.tenant:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     engine = AlertEngine(db)
     alert = await engine.acknowledge_alert(alert_id)
     if not alert:

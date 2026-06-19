@@ -13,6 +13,8 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 # 32+ char secret so the boot check in main.py passes.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-32-chars-long-for-tests-only-yes")
 os.environ.setdefault("DEBUG", "true")
+# SEED_DEMO_USERS is opt-in (Medium #22); the test suite sets it explicitly
+# because most fixtures assume admin/viewer rows are present.
 os.environ.setdefault("SEED_DEMO_USERS", "true")
 os.environ.setdefault("ADMIN_PASSWORD", "admin123")
 os.environ.setdefault("VIEWER_PASSWORD", "viewer123")
@@ -48,8 +50,16 @@ async def _bootstrap_db():
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_tables(_bootstrap_db):
     """Wipe data tables between tests so they don't bleed into each other.
-    Leaves `users` alone — seed_users() is idempotent and the lifespan only
-    runs once per test here."""
+
+    `users` is wiped too: the JWT re-validation test (Critical #5) bumps
+    admin.updated_at to the future, which would then invalidate every later
+    test's token. seed_users() is then called again so the next test starts
+    with a fresh admin/viewer row.
+    """
+    # Reset slowapi in-memory counters so the 5/minute login limit doesn't
+    # bleed across tests (test_login_rate_limit fills it on purpose).
+    from backend.rate_limit import limiter
+    limiter.reset()
     async with engine.begin() as conn:
         # Use DELETE (not TRUNCATE) so autoincrement counters persist and so
         # we work on SQLite in addition to Postgres.
@@ -57,7 +67,16 @@ async def _clean_tables(_bootstrap_db):
         await conn.execute(delete(AlertRuleDB))
         await conn.execute(delete(LogEntry))
         await conn.execute(delete(TenantDB))
+        await conn.execute(delete(UserDB))
+    # Re-seed users and alert rule (cheap; idempotent on a fresh table).
+    await seed_defaults()
     yield
+    # N1 fix: pytest-asyncio creates a fresh event loop per test function.
+    # The module-level engine pool caches asyncpg/aiosqlite connections bound
+    # to the prior loop, so when the next test re-enters this fixture the
+    # cached connection errors with "attached to a different loop". Disposing
+    # forces the pool to reconnect against the new loop on first use.
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture
@@ -66,6 +85,17 @@ async def client(_bootstrap_db):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as ac:
         yield ac
+
+
+@pytest_asyncio.fixture
+async def db_session(_bootstrap_db):
+    """Async SQLAlchemy session bound to the test engine. Yields a session
+    and rolls back on exit so tests can stage rows without leaking them
+    into the next test."""
+    from backend.storage.database import async_session as _async_session
+    async with _async_session() as session:
+        yield session
+        await session.rollback()
 
 
 async def _login(client: AsyncClient, username: str, password: str) -> str:

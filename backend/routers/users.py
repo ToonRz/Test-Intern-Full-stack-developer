@@ -1,32 +1,42 @@
 """User Management API — Admin-only user CRUD."""
-import bcrypt
-"""User Management API — Admin-only user CRUD."""
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, Literal
 from backend.storage.database import get_db, UserDB
-from backend.auth.jwt import get_current_user, get_password_hash, verify_password
+from backend.auth.jwt import get_current_user, get_password_hash
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-MAX_PASSWORD_BYTES = 72  # bcrypt limit
+# bcrypt's 72-byte limit. Schema enforces char count, this is a byte-count
+# safety net for UTF-8 passwords (e.g. Thai text is multi-byte).
+MAX_PASSWORD_BYTES = 72
+
+
+def _validate_password_bytes(password: str) -> str:
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"password exceeds {MAX_PASSWORD_BYTES} bytes when UTF-8 encoded"
+        )
+    return password
 
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     email: Optional[EmailStr] = None
     password: str = Field(min_length=8, max_length=128)
-    role: str = "Viewer"
-    tenant: str = ""
+    role: Literal["Admin", "Viewer"] = "Viewer"
+    # Spec §6: Viewer's scope is "tenant ของตน" — they need a non-empty tenant.
+    # Admins can pass a specific tenant or "*" (all tenants); both satisfy
+    # min_length=1, so the schema doesn't second-guess the operator's intent.
+    tenant: str = Field(min_length=1)
 
 
 class UserUpdate(BaseModel):
     password: Optional[str] = Field(default=None, min_length=8, max_length=128)
-    role: Optional[str] = None
-    tenant: Optional[str] = None
+    role: Optional[Literal["Admin", "Viewer"]] = None
+    tenant: Optional[str] = Field(default=None, min_length=1)
     email: Optional[EmailStr] = None
 
 
@@ -75,8 +85,13 @@ async def create_user(
     """POST /users — create new user (Admin only)."""
     _require_admin(current_user)
 
-    if data.role not in ("Admin", "Viewer"):
-        raise HTTPException(status_code=400, detail="role must be Admin or Viewer")
+    # Medium #30: password must fit in bcrypt's 72-byte window. The tenant
+    # min_length=1 is enforced by the schema; the byte check is per-call so
+    # we can return a clean 400 instead of a Pydantic validation 422.
+    try:
+        _validate_password_bytes(data.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     existing = (await db.execute(
         select(UserDB).where(UserDB.username == data.username)
@@ -88,7 +103,7 @@ async def create_user(
         username=data.username,
         email=data.email,
         role=data.role,
-        tenant=data.tenant or ("*" if data.role == "Admin" else ""),
+        tenant=data.tenant,
         hashed_password=get_password_hash(data.password),
     )
     db.add(user)
@@ -113,10 +128,12 @@ async def update_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     if data.password:
+        try:
+            _validate_password_bytes(data.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         user.hashed_password = get_password_hash(data.password)
-    if data.role:
-        if data.role not in ("Admin", "Viewer"):
-            raise HTTPException(status_code=400, detail="role must be Admin or Viewer")
+    if data.role is not None:
         user.role = data.role
     if data.tenant is not None:
         user.tenant = data.tenant
