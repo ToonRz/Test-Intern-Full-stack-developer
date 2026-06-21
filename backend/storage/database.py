@@ -125,6 +125,12 @@ class TriggeredAlertDB(Base):
     # Log IDs for detail
     logs = Column(JSON, nullable=True)  # [log_id, ...]
     acknowledged = Column(Boolean, default=False)
+    # Delivery flags — flipped to True by the alert engine after the
+    # corresponding side-effect succeeds. They start False so a restart that
+    # pre-empts the fire-and-forget delivery task can be detected and the
+    # pending webhook/email retried on next startup.
+    webhook_sent = Column(Boolean, default=False)
+    email_sent = Column(Boolean, default=False)
     # Legacy field for compatibility
     triggered_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
 
@@ -203,6 +209,23 @@ async def init_db():
                 sync_conn, dialect, "alert_rules", "tenant",
                 "ALTER TABLE alert_rules ADD COLUMN tenant VARCHAR NOT NULL DEFAULT '*'",
                 "ALTER TABLE alert_rules ADD COLUMN tenant VARCHAR NOT NULL DEFAULT '*'",
+            )
+        )
+        # Medium #5: webhook_sent / email_sent delivery flags on triggered
+        # alerts so a restart that pre-empts the fire-and-forget delivery
+        # task can be detected and retried on next startup.
+        await conn.run_sync(
+            lambda sync_conn: _alter(
+                sync_conn, dialect, "triggered_alerts", "webhook_sent",
+                "ALTER TABLE triggered_alerts ADD COLUMN webhook_sent BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE triggered_alerts ADD COLUMN webhook_sent BOOLEAN NOT NULL DEFAULT 0",
+            )
+        )
+        await conn.run_sync(
+            lambda sync_conn: _alter(
+                sync_conn, dialect, "triggered_alerts", "email_sent",
+                "ALTER TABLE triggered_alerts ADD COLUMN email_sent BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE triggered_alerts ADD COLUMN email_sent BOOLEAN NOT NULL DEFAULT 0",
             )
         )
         # Index for tenant-scoped alert rule lookups (Critical #2).

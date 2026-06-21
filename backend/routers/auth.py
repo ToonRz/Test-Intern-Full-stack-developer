@@ -53,7 +53,16 @@ async def login(
     result = await db.execute(select(UserDB).where(UserDB.username == data.username))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(data.password, user.hashed_password):
+    # Constant-time login: always run bcrypt, even when the user doesn't exist.
+    # Without this, an attacker timing-distinguishes "unknown username" (~1 ms)
+    # from "wrong password" (~50 ms bcrypt verify) and enumerates valid users.
+    # The dummy hash below is a real bcrypt digest so the work is identical
+    # regardless of which branch fires.
+    DUMMY_HASH = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RqHpwQJW."
+    password_to_check = user.hashed_password if user else DUMMY_HASH
+    password_ok = verify_password(data.password, password_to_check)
+
+    if not user or not password_ok:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = create_access_token(

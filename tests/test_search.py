@@ -66,12 +66,55 @@ async def test_query_logs_accepts_csv_source(client, admin_token):
 
 
 async def test_query_logs_accepts_severity_buckets(client, admin_token):
-    """Severity buckets (low/medium/high/critical) expand to numeric ranges."""
+    """Severity buckets (low/medium/high/critical) expand to numeric ranges
+    AND the union of non-contiguous buckets does not silently include the
+    gap. Critical=9-10 + Low=0-3 should match {0,1,2,3,9,10} — never 4-8.
+    """
+    from datetime import datetime, timezone
+    from backend.storage.database import async_session, LogEntry
+
+    # Seed one log per severity 0..10 so the filter has something to match.
+    async with async_session() as db:
+        for sev in range(11):
+            db.add(LogEntry(
+                tenant="demoA",
+                source="api",
+                event_type=f"sev_{sev}",
+                severity=sev,
+                timestamp=datetime.now(timezone.utc),
+            ))
+        await db.commit()
+
+    # critical+low must NOT match medium (4-6) or high (7-8).
     response = await client.get(
-        "/api/v1/logs?severity=critical&severity=low",
+        "/api/v1/logs?severity=critical&severity=low&size=100",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+    data = response.json()
+    matched = {log["severity"] for log in data["logs"]}
+    assert matched <= {0, 1, 2, 3, 9, 10}, (
+        f"critical+low filter should return only severities in {{0,1,2,3,9,10}}, "
+        f"got {sorted(matched)}"
+    )
+    assert 0 in matched and 9 in matched, "buckets must include the boundary values"
+
+    # Each bucket alone returns its own range.
+    for bucket, expected in [
+        ("critical", {9, 10}),
+        ("high", {7, 8}),
+        ("medium", {4, 5, 6}),
+        ("low", {0, 1, 2, 3}),
+    ]:
+        response = await client.get(
+            f"/api/v1/logs?severity={bucket}&size=100",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        matched = {log["severity"] for log in response.json()["logs"]}
+        assert matched == expected, (
+            f"bucket={bucket}: expected {sorted(expected)}, got {sorted(matched)}"
+        )
 
 
 async def test_query_logs_facets_returns_distinct_values(client, admin_token):
@@ -85,3 +128,47 @@ async def test_query_logs_facets_returns_distinct_values(client, admin_token):
     for key in ("sources", "event_types", "actions", "tenants"):
         assert key in data
         assert isinstance(data[key], list)
+
+
+async def test_logs_stats_works_on_sqlite(client, admin_token):
+    """Regression: /logs/stats must not depend on Postgres-only functions
+    like to_timestamp() — this test uses SQLite (test default) and would
+    500 if the timeline query was not made portable. The dashboard's main
+    page hits this endpoint on load.
+    """
+    from datetime import datetime, timezone, timedelta
+    from backend.storage.database import async_session, LogEntry
+
+    async with async_session() as db:
+        now = datetime.now(timezone.utc)
+        for i in range(3):
+            db.add(LogEntry(
+                tenant="demoA",
+                source="api",
+                event_type="stats_test",
+                severity=5,
+                timestamp=now - timedelta(hours=i),
+            ))
+        await db.commit()
+
+    response = await client.get(
+        "/api/v1/logs/stats?bucket_minutes=60",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200, f"stats crashed: {response.text[:200]}"
+    body = response.json()
+    assert body["total"] >= 3
+    assert isinstance(body["timeline"], list)
+    assert len(body["timeline"]) >= 1
+    assert any(item["key"] == "api" for item in body["by_source"])
+
+
+async def test_logs_stats_respects_tenant_filter_viewer(client, viewer_token):
+    """Viewer must only see their own tenant's stats (spec §6 RBAC)."""
+    response = await client.get(
+        "/api/v1/logs/stats",
+        headers={"Authorization": f"Bearer {viewer_token}"},
+    )
+    assert response.status_code == 200
+    # Viewer token belongs to demoA; stats must not 500 on an empty result set.
+    assert "total" in response.json()

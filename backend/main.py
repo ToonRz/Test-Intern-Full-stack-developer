@@ -85,6 +85,13 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     await seed_defaults()
+    # Medium #5 fix: re-fire any webhook/email delivery that didn't complete
+    # before the previous process died. The flags are flipped in a fresh
+    # session by `_send_webhook` / `_send_email` after success.
+    from backend.services.alert_engine import AlertEngine as _AE
+    from backend.storage.database import async_session as _async_session
+    async with _async_session() as _db:
+        await _AE(_db)._retry_pending_deliveries()
     # High #6: instrument the app after it's defined (was at module level,
     # fragile if anyone reorders imports above).
     setup_telemetry()
@@ -124,9 +131,14 @@ async def security_headers(request: Request, call_next):
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    # Use the limit configured on the route (e.g. "5 per 1 minute" for /auth/login)
+    # instead of a hard-coded message. The default detail on the exception already
+    # carries this, but rebuilding here keeps the response shape consistent and
+    # gives us one place to localize the prefix if we ever need to.
+    limit_str = str(exc.limit.limit) if exc.limit is not None else "request limit"
     return JSONResponse(
         status_code=429,
-        content={"detail": "Rate limit exceeded. Max 100 requests per minute."}
+        content={"detail": f"Rate limit exceeded: {limit_str}."}
     )
 
 
@@ -271,11 +283,6 @@ async def _seed_default_alert_rule():
         logger.info("Seeded default Login Failed Brute-Force alert rule")
 
 
-def _bcrypt_hash(password: str) -> str:  # pragma: no cover — kept for back-compat
-    """Deprecated — use auth.jwt.get_password_hash() instead."""
-    return get_password_hash(password)
-
-
 # ── Syslog Listener (UDP + TCP, spec §5.1) ───────────────────────────────
 async def _persist_log(normalized) -> int:
     """Persist a normalized log via async session. Returns the row id."""
@@ -348,11 +355,39 @@ async def start_syslog_listener():
         except PermissionError:
             logger.error("Cannot bind UDP %s:%s — needs root or NET_BIND_SERVICE capability", host, port)
             return
+
+        # UDP via loop.add_reader is fully asyncio-native: the callback runs
+        # on the loop's reader thread only when the kernel reports data is
+        # ready. On shutdown, remove_reader + close() releases the fd
+        # immediately. The previous run_in_executor(recvfrom) blocked the
+        # executor thread until the next packet arrived, leaking one thread
+        # per restart.
         loop = asyncio.get_running_loop()
-        while True:
-            data, _addr = await loop.run_in_executor(None, sock.recvfrom, 65535)
-            line = data.decode("utf-8", errors="ignore").strip()
-            await _handle_syslog_line(line)
+        sock.setblocking(False)
+
+        def on_readable():
+            while True:
+                try:
+                    data, _addr = sock.recvfrom(65535)
+                except BlockingIOError:
+                    return  # drained the kernel buffer for now
+                line = data.decode("utf-8", errors="ignore").strip()
+                if line:
+                    # Schedule the coroutine on the loop — the reader
+                    # callback itself is synchronous.
+                    asyncio.create_task(_handle_syslog_line(line))
+
+        try:
+            loop.add_reader(sock.fileno(), on_readable)
+            # Park here until cancelled; the listener is driven by add_reader.
+            await asyncio.Future()
+        finally:
+            try:
+                loop.remove_reader(sock.fileno())
+            except (OSError, ValueError):
+                pass
+            sock.close()
+            logger.info("Syslog UDP listener closed on %s:%s", host, port)
 
     async def tcp_loop():
         """RFC6587-style octet-counted or LF-delimited TCP syslog.

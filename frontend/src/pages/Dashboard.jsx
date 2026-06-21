@@ -92,8 +92,11 @@ function Dashboard() {
     load()
   }, [load])
 
+  // severityBucket maps 9-10 to "critical" — mirror it here so the card
+  // count matches the bucket the filter UI exposes (spec §3: severity 0-10,
+  // critical = 9-10). Using >= 8 silently mixed in "high" (8).
   const criticalCount = stats.by_severity
-    .filter((s) => parseInt(s.key, 10) >= 8)
+    .filter((s) => parseInt(s.key, 10) >= 9)
     .reduce((sum, s) => sum + s.count, 0)
 
   const statCards = [

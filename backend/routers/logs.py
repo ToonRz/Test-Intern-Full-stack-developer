@@ -44,6 +44,14 @@ def _normalize_list(values: Optional[List[str]]) -> List[str]:
     return seen
 
 
+def _escape_like(s: str) -> str:
+    """Escape SQL LIKE wildcards (`%`, `_`, backslash) so user-supplied search terms
+    are matched literally instead of treated as globs. Without this, searching
+    for "100%" or "user_name" matches wildly more rows than the user expects.
+    """
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _apply_common_filters(query, current_user: UserDB, tenants, sources, event_types,
                           actions, geo_country, severities, start, end):
     """Apply RBAC + common filters used by /logs and /logs/stats.
@@ -85,10 +93,9 @@ def _apply_common_filters(query, current_user: UserDB, tenants, sources, event_t
             elif b == "low":
                 ranges.append((0, 3))
         if ranges:
-            lo = min(r[0] for r in ranges)
-            hi = max(r[1] for r in ranges)
-            # Use IN over a generated list so non-contiguous buckets (e.g.
-            # critical+low) don't accidentally include medium/high.
+            # Expand each bucket to its integer values and IN() the union.
+            # Using IN (not BETWEEN) so non-contiguous buckets like
+            # critical+low don't accidentally include the medium/high gap.
             allowed = set()
             for lo_r, hi_r in ranges:
                 for v in range(lo_r, hi_r + 1):
@@ -216,19 +223,48 @@ async def get_dashboard_stats(
         select(func.count(LogEntry.id)).where(base.whereclause)
     )).scalar_one()
 
-    # Timeline — bucketed count via date_trunc on Postgres.
+    # Timeline — bucketed count. Postgres has date_trunc (and we use to_timestamp
+    # there for explicit floor-to-bucket alignment). SQLite has neither, so
+    # bucket in Python to keep the dev/CI path working without a Postgres dep.
     bucket_seconds = bucket_minutes * 60
-    timeline_q = (
-        select(
-            func.to_timestamp(func.floor(func.extract("epoch", LogEntry.timestamp) / bucket_seconds) * bucket_seconds).label("bucket"),
-            func.count(LogEntry.id).label("count"),
+    if db.bind.dialect.name == "postgres":
+        timeline_q = (
+            select(
+                func.to_timestamp(
+                    func.floor(func.extract("epoch", LogEntry.timestamp) / bucket_seconds) * bucket_seconds
+                ).label("bucket"),
+                func.count(LogEntry.id).label("count"),
+            )
+            .where(base.whereclause)
+            .group_by("bucket")
+            .order_by("bucket")
         )
-        .where(base.whereclause)
-        .group_by("bucket")
-        .order_by("bucket")
-    )
-    timeline_rows = (await db.execute(timeline_q)).all()
-    timeline = [{"bucket": r.bucket.isoformat() if r.bucket else None, "count": int(r.count)} for r in timeline_rows]
+        timeline_rows = (await db.execute(timeline_q)).all()
+        timeline = [
+            {"bucket": r.bucket.isoformat() if r.bucket else None, "count": int(r.count)}
+            for r in timeline_rows
+        ]
+    else:
+        # SQLite/aiosqlite path: fetch (timestamp, count) pairs and aggregate
+        # in Python. The total row count is bounded by the time window and
+        # bucket size (e.g. 7 days / 60-min buckets = 168 rows max), so the
+        # in-Python loop is cheap and avoids a Postgres-specific dependency.
+        raw_q = (
+            select(LogEntry.timestamp)
+            .where(base.whereclause)
+        )
+        ts_rows = (await db.execute(raw_q)).scalars().all()
+        from collections import Counter
+        bucket_counts: Counter = Counter()
+        for ts in ts_rows:
+            epoch = int(ts.timestamp())
+            bucket_epoch = (epoch // bucket_seconds) * bucket_seconds
+            from datetime import datetime as _dt
+            bucket_counts[_dt.fromtimestamp(bucket_epoch, tz=timezone.utc)] += 1
+        timeline = [
+            {"bucket": b.isoformat(), "count": c}
+            for b, c in sorted(bucket_counts.items())
+        ]
 
     # Top N helpers
     async def top_by(column, n):
@@ -309,17 +345,22 @@ async def query_logs(
                                   actions, geo_country, severities, start, end)
 
     if q:
+        # Escape LIKE wildcards so the user's literal string is matched, not
+        # a glob. Without this, q="100%" matches "100<anything>" and a stray
+        # underscore in a hostname turns into "any single char".
+        safe_q = _escape_like(q)
+        pattern = f"%{safe_q}%"
         search_filter = or_(
-            LogEntry.event_type.ilike(f"%{q}%"),
-            LogEntry.user.ilike(f"%{q}%"),
-            LogEntry.src_ip.ilike(f"%{q}%"),
-            LogEntry.host.ilike(f"%{q}%"),
-            LogEntry.rdns_hostname.ilike(f"%{q}%"),
-            LogEntry.action.ilike(f"%{q}%"),
+            LogEntry.event_type.ilike(pattern, escape="\\"),
+            LogEntry.user.ilike(pattern, escape="\\"),
+            LogEntry.src_ip.ilike(pattern, escape="\\"),
+            LogEntry.host.ilike(pattern, escape="\\"),
+            LogEntry.rdns_hostname.ilike(pattern, escape="\\"),
+            LogEntry.action.ilike(pattern, escape="\\"),
         )
         if db.bind.dialect.name == "postgres":
             search_filter = search_filter.or_(
-                cast(LogEntry.raw, Text).ilike(f"%{q}%")
+                cast(LogEntry.raw, Text).ilike(pattern, escape="\\")
             )
         query = query.where(search_filter)
 

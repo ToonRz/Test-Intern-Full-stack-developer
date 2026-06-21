@@ -131,10 +131,16 @@ async def get_triggered_alerts(
 
     Grouped alerts: Same src_ip + rule_name within time window = one alert group.
     Multiple occurrences are counted in 'count' field.
+
+    Multi-tenant: when the caller is a Viewer (spec §6), the `tenant` query
+    parameter is forcibly overridden with the JWT's tenant claim — a Viewer
+    cannot pass another tenant's name and broaden their view. Admins honour
+    the parameter as supplied (or see all rows when it is omitted).
     """
     engine = AlertEngine(db)
 
-    # If viewer, restrict to their tenant
+    # If viewer, restrict to their tenant — silently overrides the query param
+    # so a Viewer cannot read another tenant's alerts by passing `?tenant=...`.
     filter_tenant = tenant
     if current_user.role == "Viewer":
         filter_tenant = current_user.tenant
@@ -270,6 +276,9 @@ async def acknowledge_alert(
     from sqlalchemy import select
     from backend.storage.database import TriggeredAlertDB
 
+    # Single SELECT: load the alert, scope it for the current user, and flip
+    # `acknowledged` on the same row. The previous flow ran an engine-level
+    # SELECT after this, doubling the round-trips for no reason.
     pre = (await db.execute(
         select(TriggeredAlertDB).where(TriggeredAlertDB.id == alert_id)
     )).scalar_one_or_none()
@@ -278,8 +287,7 @@ async def acknowledge_alert(
     if current_user.role == "Viewer" and pre.tenant != current_user.tenant:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    engine = AlertEngine(db)
-    alert = await engine.acknowledge_alert(alert_id)
-    if not alert:
-        raise HTTPException(status_code=404, detail="Alert not found")
+    pre.acknowledged = True
+    await db.commit()
+    await db.refresh(pre)
     return {"status": "acknowledged", "alert_id": alert_id}

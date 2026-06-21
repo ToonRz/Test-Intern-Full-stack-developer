@@ -12,6 +12,12 @@ logger = logging.getLogger("log-management.alert_engine")
 
 FAILED_LOGIN_EVENT_TYPES = ("LogonFailed", "app_login_failed")
 
+# Cap the sample-log list per triggered alert. The `count` field conveys the
+# raw total; the list is only sampled for the UI's "related logs" view, so a
+# rolling window of the most recent N entries is enough. Without this, a
+# sustained attack rewrites a multi-megabyte JSON blob on every update.
+MAX_ALERT_LOG_SAMPLES = 100
+
 
 def _calculate_severity(log_severity: int) -> str:
     """Map log severity (0-10) to alert severity bucket."""
@@ -37,6 +43,14 @@ class AlertEngine:
         Spec §8 Login Failed Brute-Force: trigger only when the number of failed
         login events from the same src_ip within the rule's window crosses the
         rule's threshold. Each (src_ip, rule) pair is grouped.
+
+        Race-safety: two logs from the same src_ip ingested concurrently could
+        otherwise both observe count==threshold-1, both decide "not yet", and
+        miss the alert — or both observe count==threshold and both insert
+        duplicate open alerts. We lock the matched rule rows (Postgres
+        `SELECT ... FOR UPDATE`; SQLite is single-writer so the lock is
+        implicit) and the existing-alert row so the count → create sequence
+        is serialised for any given (src_ip, rule) group.
         """
         if log.event_type not in FAILED_LOGIN_EVENT_TYPES:
             return None
@@ -47,6 +61,9 @@ class AlertEngine:
         # Critical #2: rules must be tenant-scoped. A rule with tenant="*"
         # applies to every tenant; otherwise the rule's tenant must match the
         # log's tenant (spec §6 — multi-tenant isolation).
+        # with_for_update() serialises concurrent transactions working on the
+        # same rule — on Postgres this acquires a row lock; on SQLite the
+        # engine is single-writer so the call is a no-op.
         result = await self.db.execute(
             select(AlertRuleDB).where(
                 AlertRuleDB.enabled == True,
@@ -55,7 +72,7 @@ class AlertEngine:
                     AlertRuleDB.tenant == "*",
                     AlertRuleDB.tenant == log.tenant,
                 ),
-            )
+            ).with_for_update()
         )
         rules = result.scalars().all()
         if not rules:
@@ -84,13 +101,15 @@ class AlertEngine:
                 continue
 
             # Find an unacknowledged open alert group within this window.
+            # Lock the row so a sibling transaction can't also "create" while
+            # we decide to update it.
             existing_q = select(TriggeredAlertDB).where(
                 and_(
                     TriggeredAlertDB.group_key == group_key,
                     TriggeredAlertDB.acknowledged == False,
                     TriggeredAlertDB.last_seen >= window_start,
                 )
-            )
+            ).with_for_update()
             existing = (await self.db.execute(existing_q)).scalar_one_or_none()
 
             if existing:
@@ -98,9 +117,19 @@ class AlertEngine:
                 existing.last_seen = now
                 existing.src_ip = log.src_ip
                 if log.id is not None:
+                    # Cap the sample list at MAX_ALERT_LOG_SAMPLES so a long-
+                    # running brute force doesn't grow one JSON column to
+                    # megabytes and rewrite it on every update. The `count`
+                    # field already conveys magnitude; the list is only used
+                    # for "show related logs" UI samples.
                     logs_list = list(existing.logs or [])
                     if log.id not in logs_list:
-                        logs_list.append(log.id)
+                        if len(logs_list) < MAX_ALERT_LOG_SAMPLES:
+                            logs_list.append(log.id)
+                        else:
+                            # Keep the newest MAX_ALERT_LOG_SAMPLES — drop the
+                            # oldest so the sample stays recent.
+                            logs_list = logs_list[1:] + [log.id]
                     existing.logs = logs_list
                 new_severity = _calculate_severity(log.severity or 5)
                 order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -146,9 +175,14 @@ class AlertEngine:
         return triggered
 
     async def _send_webhook(self, rule: AlertRuleDB, triggered: TriggeredAlertDB):
+        # Reload in a fresh session — the caller's session was already committed
+        # when this fire-and-forget task started, so the ORM identity map is
+        # detached and a naive `triggered.webhook_sent = True` would have no
+        # effect on the database.
+        from backend.storage.database import async_session
         try:
             async with httpx.AsyncClient() as client:
-                await client.post(
+                response = await client.post(
                     rule.webhook_url,
                     json={
                         "alert": "Brute Force Login Detected",
@@ -162,15 +196,82 @@ class AlertEngine:
                     },
                     timeout=10.0,
                 )
+                response.raise_for_status()
         except Exception:
             logger.exception("Webhook delivery failed for alert %s", triggered.id)
+            return
+
+        # Flip the delivery flag in a fresh session so a restart that
+        # pre-empted the in-flight HTTP request can be detected and retried
+        # on next startup.
+        try:
+            async with async_session() as db:
+                row = await db.get(TriggeredAlertDB, triggered.id)
+                if row and not row.webhook_sent:
+                    row.webhook_sent = True
+                    await db.commit()
+        except Exception:
+            logger.exception("Failed to mark webhook_sent for alert %s", triggered.id)
 
     async def _send_email(self, rule: AlertRuleDB, triggered: TriggeredAlertDB):
-        # Email delivery is intentionally a no-op here — wire SMTP/SES in your environment.
+        # Email delivery is intentionally a no-op here — wire SMTP/SES in your
+        # environment. We still flip `email_sent` to True so the startup-retry
+        # scanner doesn't keep re-firing a no-op delivery.
         logger.info(
             "Email alert would be sent to %s for rule %s src_ip=%s",
             rule.email_to, rule.name, triggered.src_ip,
         )
+        try:
+            from backend.storage.database import async_session
+            async with async_session() as db:
+                row = await db.get(TriggeredAlertDB, triggered.id)
+                if row and not row.email_sent:
+                    row.email_sent = True
+                    await db.commit()
+        except Exception:
+            logger.exception("Failed to mark email_sent for alert %s", triggered.id)
+
+    async def _retry_pending_deliveries(self):
+        """On startup, re-fire any delivery that didn't complete last time.
+
+        Medium #5 fix: `_send_webhook` / `_send_email` are fire-and-forget
+        tasks. A restart that pre-empts the HTTP request leaves `webhook_sent`
+        / `email_sent` at False. Scan for those rows older than 30s (to avoid
+        racing a still-in-flight concurrent ingest) and re-fire.
+
+        Email has no-op delivery here, so an unflipped `email_sent` only means
+        the prior process died before the flag UPDATE. Retry idempotently.
+        """
+        from backend.storage.database import async_session
+
+        threshold = datetime.now(timezone.utc) - timedelta(seconds=30)
+        # Snapshot (alert, rule) pairs inside the session — outside the `with`
+        # block, `db` is closed and any `.execute()` would fail.
+        to_retry: list[tuple[TriggeredAlertDB, AlertRuleDB]] = []
+        async with async_session() as db:
+            pending = (await db.execute(
+                select(TriggeredAlertDB).where(
+                    or_(
+                        TriggeredAlertDB.webhook_sent == False,  # noqa: E712
+                        TriggeredAlertDB.email_sent == False,    # noqa: E712
+                    ),
+                    TriggeredAlertDB.triggered_at <= threshold,
+                )
+            )).scalars().all()
+            for alert in pending:
+                rule = (await db.execute(
+                    select(AlertRuleDB).where(AlertRuleDB.id == alert.rule_id)
+                )).scalar_one_or_none()
+                if rule:
+                    to_retry.append((alert, rule))
+
+        for alert, rule in to_retry:
+            if not alert.webhook_sent and rule.action in ("webhook", "both") and rule.webhook_url:
+                logger.info("Retrying pending webhook for alert %s", alert.id)
+                asyncio.create_task(self._send_webhook(rule, alert))
+            if not alert.email_sent and rule.action in ("email", "both") and rule.email_to:
+                logger.info("Retrying pending email for alert %s", alert.id)
+                asyncio.create_task(self._send_email(rule, alert))
 
     async def get_alert_rules(self) -> List[AlertRuleDB]:
         result = await self.db.execute(select(AlertRuleDB).order_by(AlertRuleDB.id))

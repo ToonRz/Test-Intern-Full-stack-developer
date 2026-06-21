@@ -123,17 +123,3 @@ async def require_admin(user: UserDB = Depends(get_current_user)) -> UserDB:
     if user.role != "Admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
-
-
-class TenantFilter:
-    """Extract tenant from request — supports header, query param, or JWT claim."""
-
-    @staticmethod
-    async def get_tenant(
-        request: Request,
-        user: UserDB = Depends(get_current_user),
-    ) -> str:
-        if user.role == "Admin":
-            tenant = request.headers.get("X-Tenant") or request.query_params.get("tenant")
-            return tenant if tenant else "*"
-        return user.tenant

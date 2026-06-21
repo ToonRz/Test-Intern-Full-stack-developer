@@ -69,14 +69,22 @@ async def test_login_rate_limit_blocks_brute_force(client):
     # 5 bad attempts must be accepted by the limiter (each returns 401
     # because the password is wrong), the 6th must be 429 from slowapi.
     statuses = []
+    last_body = None
     for _ in range(6):
         resp = await client.post(
             "/api/v1/auth/login",
             json={"username": "admin", "password": "wrong-on-purpose"},
         )
         statuses.append(resp.status_code)
+        last_body = resp.text
     assert statuses[:5] == [401] * 5, f"first 5 should be 401 (bad creds), got {statuses[:5]}"
     assert statuses[5] == 429, f"6th should be 429 (rate limit), got {statuses[5]}"
+    # The 429 body must reflect the actual route limit (5/minute) — not a
+    # hard-coded "100 requests per minute" message that belonged to a
+    # different route. This guards against the misleading-message bug.
+    assert "5 per" in last_body, (
+        f"rate limit message should mention the actual limit (5/minute); got: {last_body!r}"
+    )
 
 
 async def test_token_rejected_after_user_update(client, admin_token):
