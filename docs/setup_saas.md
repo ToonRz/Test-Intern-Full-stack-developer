@@ -5,13 +5,12 @@
 SaaS mode รันบน Cloud (VM หรือ Container Service) เปิดให้ external users เข้าผ่าน HTTPS URL
 ใช้ Docker Compose stack เดียวกับ Appliance + เพิ่ม domain, Let's Encrypt cert, และ cloud firewall
 
-อ้างอิง: `spec.md` §9.2
 
 ## Requirements
 
 - Cloud VM (AWS EC2, GCP Compute, Azure VM) หรือ Container Service
 - Domain name (หรือใช้ public IP ชั่วคราว — self-signed ก็ได้)
-- Minimum spec (spec §9.2):
+- Minimum spec :
   - 4 vCPU
   - 8 GB RAM
   - 40 GB Disk
@@ -186,7 +185,7 @@ sudo chown $USER:$USER nginx/certs/server.crt nginx/certs/server.key
   docker compose exec nginx nginx -s reload
 ```
 
-#### Option B: Self-signed (ทดสอบ / internal เท่านั้น — spec §9.2 อนุญาต)
+#### Option B: Self-signed (ทดสอบ / internal เท่านั้น)
 
 ```bash
 make certs
