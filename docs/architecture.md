@@ -72,7 +72,7 @@ JSON batch                                              Background: AlertEngine
 | Ingest (Syslog) | Python async UDP/TCP listener (embedded in backend) | Parse RFC3164/5424 syslog, normalize, store |
 | Ingest (HTTP) | FastAPI route | Accept single JSON or batch array via `POST /ingest` |
 | Ingest (Batch) | FastAPI route | Accept file-batch JSON via `POST /ingest/batch` |
-| Normalizer | Python | Map source-specific fields → central schema (spec §3) |
+| Normalizer | Python | Map source-specific fields → central schema |
 | Enrichment | Python + MaxMind GeoLite2 + Redis cache | GeoIP, reverse DNS (async, failure-tolerant) |
 | Alert Engine | Python | Brute-force rule + custom rule evaluation on every new log |
 | Backend API | FastAPI + asyncpg | AuthN (JWT in HttpOnly cookie), RBAC, search, alerts, users, tenants |
@@ -90,16 +90,16 @@ JSON batch                                              Background: AlertEngine
 | Storage | PostgreSQL + JSONB + GIN | ACID, native JSON ops, partition-friendly |
 | Backend API | FastAPI + Uvicorn (async) | Auto OpenAPI docs, async-first fits Postgres asyncpg |
 | Frontend | React 18 + Recharts + Vite | Component model, declarative charts, fast dev |
-| Auth | JWT in HttpOnly cookie + RBAC | Spec §6; cookie avoids localStorage XSS risk |
-| Enrichment | MaxMind GeoLite2 + reverse DNS | Spec §14 "Nice-to-have: GeoIP" |
+| Auth | JWT in HttpOnly cookie + RBAC | cookie avoids localStorage XSS risk |
+| Enrichment | MaxMind GeoLite2 + reverse DNS | "Nice-to-have: GeoIP" |
 | Packaging (appliance) | Docker Compose | One-command bring-up per spec §9.1 |
-| Packaging (cloud) | Docker Compose + Helm chart + Terraform | Spec §14 "Nice-to-have: IaC" |
-| TLS | Self-signed (appliance) / Let's Encrypt (SaaS) | Spec §9.2 allows self-signed with clear steps |
-| Observability | OpenTelemetry + `/metrics` + `/health` | Spec §14 "Nice-to-have: metrics/trace" |
+| Packaging (cloud) | Docker Compose + Helm chart + Terraform | "Nice-to-have: IaC" |
+| TLS | Self-signed (appliance) / Let's Encrypt (SaaS) | allows self-signed with clear steps |
+| Observability | OpenTelemetry + `/metrics` + `/health` | "Nice-to-have: metrics/trace" |
 
 ## Normalized Schema
 
-ทุก log ถูก normalize เข้า schema เดียวกันก่อนเก็บ (spec §3):
+ทุก log ถูก normalize เข้า schema เดียวกันก่อนเก็บ :
 
 ```json
 {
@@ -133,7 +133,7 @@ JSON batch                                              Background: AlertEngine
 
 Enrichment เพิ่ม `geo_country`, `geo_city`, `geo_lat`, `geo_lon`, `rdns_hostname` ลงใน row จริง (ไม่อยู่ใน spec schema แต่ enrich ระหว่าง ingest — ไม่กระทบ contract)
 
-## Multi-Tenant Model (spec §6)
+## Multi-Tenant Model
 
 - Logs แยกตาม column `tenant` (ไม่ใช่ schema-per-tenant)
 - JWT มี claim `tenant` + `role`
@@ -158,7 +158,7 @@ Enrichment เพิ่ม `geo_country`, `geo_city`, `geo_lat`, `geo_lon`, `rdn
               • viewer: sees only demoC logs
 ```
 
-## Alerting Flow (spec §8)
+## Alerting Flow
 
 ```
 Incoming Log
@@ -186,7 +186,7 @@ Incoming Log
                     └─────────────────────────┘
 ```
 
-Built-in seeded rule: **Login Failed Brute-Force** — `event_type ∈ {LogonFailed, app_login_failed}`, group by `src_ip`, threshold ≥ N within 5 min (spec §8 example).
+Built-in seeded rule: **Login Failed Brute-Force** — `event_type ∈ {LogonFailed, app_login_failed}`, group by `src_ip`, threshold ≥ N within 5 min.
 
 ## Directory Structure
 
@@ -246,7 +246,7 @@ Built-in seeded rule: **Login Failed Brute-Force** — `event_type ∈ {LogonFai
 │   ├── init-db.sql             # Source of truth for schema (mounted by postgres)
 │   ├── generate-certs.sh       # Self-signed cert generator (idempotent)
 │   └── retention.py            # Spec §10: delete logs older than N days
-├── samples/                    # Example logs + senders (spec §11)
+├── samples/                    # Example logs + senders
 │   ├── send_syslog.sh
 │   ├── post_logs.py
 │   ├── sample_firewall.log
