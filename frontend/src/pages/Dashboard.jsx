@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts'
 import { Activity, AlertTriangle, Clock, Shield, TrendingUp, Globe, Zap, Filter } from 'lucide-react'
+import clsx from 'clsx'
 import { logs, alerts } from '../services/api'
 
 // Severity → CSS class bucket used by every page (severity is integer 0-10).
@@ -286,11 +287,6 @@ function ChartCard({ title, icon: Icon, accent, children }) {
       {children}
     </div>
   )
-}
-
-// Inline clsx — avoids adding a dep.
-function clsx(...parts) {
-  return parts.filter(Boolean).join(' ')
 }
 
 export default Dashboard

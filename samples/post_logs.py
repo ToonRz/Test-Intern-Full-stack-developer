@@ -9,12 +9,21 @@ Usage:
     python post_logs.py http://backend:8000/api/v1/ingest  # Docker network
 """
 import urllib.request
+import ssl
 import json
 import sys
 from datetime import datetime, timezone
 
 
 API_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000/api/v1/ingest"
+
+# Self-signed cert in local dev → skip verification. Production URLs with
+# valid certs work normally; only HTTPS hosts that fail validation take
+# the unverified path.
+_SSL_CTX = ssl.create_default_context()
+if API_URL.startswith("https://") and ("localhost" in API_URL or "127.0.0.1" in API_URL):
+    _SSL_CTX.check_hostname = False
+    _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 
 def post_log(log_data):
@@ -24,7 +33,7 @@ def post_log(log_data):
         data=json.dumps(log_data).encode('utf-8'),
         headers={'Content-Type': 'application/json'}
     )
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, context=_SSL_CTX) as resp:
         return json.loads(resp.read())
 
 
@@ -35,7 +44,7 @@ def post_batch(logs):
         data=json.dumps(logs).encode('utf-8'),
         headers={'Content-Type': 'application/json'}
     )
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, context=_SSL_CTX) as resp:
         return json.loads(resp.read())
 
 

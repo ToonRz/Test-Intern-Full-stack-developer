@@ -14,9 +14,12 @@ env:
   DEBUG: "false"
   API_PREFIX: "/api/v1"
   DATABASE_URL: ""
+  REDIS_URL: "redis://log-management-redis:6379/0"
   SECRET_KEY: ""
+  ALGORITHM: "HS256"
   ACCESS_TOKEN_EXPIRE_MINUTES: "60"
   DATA_RETENTION_DAYS: "7"
+  ALLOWED_ORIGINS: "https://log.example.com"
 
 resources:
   limits:

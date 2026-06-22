@@ -1,0 +1,12 @@
+# Frontend env is mostly baked into the static bundle at build time, but we
+# expose VITE_API_URL via ConfigMap so a single image can be deployed to
+# staging/prod by overriding the value without rebuilding.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-frontend-config
+  namespace: {{ .Values.namespace | default "log-management" }}
+  labels:
+    app: {{ .Chart.Name }}-frontend
+data:
+  VITE_API_URL: {{ .Values.env.VITE_API_URL | quote }}

@@ -1,0 +1,26 @@
+# Horizontal Pod Autoscaler — keeps the backend responsive under ingest bursts.
+# Mirrors the spec in values.yaml: min/max replicas + target CPU utilisation.
+# Requires metrics-server to be installed in the cluster.
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Chart.Name }}-backend
+  namespace: {{ .Values.namespace | default "log-management" }}
+  labels:
+    app: {{ .Chart.Name }}-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Chart.Name }}-backend
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

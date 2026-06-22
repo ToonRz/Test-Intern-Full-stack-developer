@@ -18,6 +18,7 @@ spec:
       annotations:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
     spec:
+      serviceAccountName: {{ .Chart.Name }}-backend
       containers:
         - name: backend
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -26,21 +27,16 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
-          env:
-            - name: APP_NAME
-              value: {{ .Values.env.APP_NAME | quote }}
-            - name: DEBUG
-              value: {{ .Values.env.DEBUG | quote }}
-            - name: API_PREFIX
-              value: {{ .Values.env.API_PREFIX | quote }}
-            - name: DATABASE_URL
-              value: {{ .Values.env.DATABASE_URL | quote }}
-            - name: SECRET_KEY
-              value: {{ .Values.env.SECRET_KEY | quote }}
-            - name: ACCESS_TOKEN_EXPIRE_MINUTES
-              value: {{ .Values.env.ACCESS_TOKEN_EXPIRE_MINUTES | quote }}
-            - name: DATA_RETENTION_DAYS
-              value: {{ .Values.env.DATA_RETENTION_DAYS | quote }}
+          envFrom:
+            # Non-secret config — plain strings in the ConfigMap.
+            - configMapRef:
+                name: {{ .Chart.Name }}-backend-config
+            # Sensitive (SECRET_KEY, DATABASE_URL) — operators MUST set
+            # these via --set or ExternalSecret. backend/main.py refuses
+            # to boot with a weak SECRET_KEY, so an unset secret is
+            # detected at startup, not silently at first request.
+            - secretRef:
+                name: {{ .Chart.Name }}-backend-secret
           livenessProbe:
             httpGet:
               path: /health

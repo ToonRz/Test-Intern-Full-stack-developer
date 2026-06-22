@@ -1,0 +1,21 @@
+# Non-secret backend configuration. All values here are non-sensitive so they
+# can live in a ConfigMap instead of a Secret (which would require base64
+# encoding and rotation ceremony).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-backend-config
+  namespace: {{ .Values.namespace | default "log-management" }}
+  labels:
+    app: {{ .Chart.Name }}-backend
+data:
+  APP_NAME: {{ .Values.env.APP_NAME | quote }}
+  DEBUG: {{ .Values.env.DEBUG | quote }}
+  API_PREFIX: {{ .Values.env.API_PREFIX | quote }}
+  REDIS_URL: {{ .Values.env.REDIS_URL | quote }}
+  ALGORITHM: {{ .Values.env.ALGORITHM | quote }}
+  ACCESS_TOKEN_EXPIRE_MINUTES: {{ .Values.env.ACCESS_TOKEN_EXPIRE_MINUTES | quote }}
+  DATA_RETENTION_DAYS: {{ .Values.env.DATA_RETENTION_DAYS | quote }}
+  # ALLOWED_ORIGINS is comma-separated; we leave it as a single line in CM and
+  # let the backend split on "," (see backend/main.py:146).
+  ALLOWED_ORIGINS: {{ .Values.env.ALLOWED_ORIGINS | default "https://localhost" | quote }}

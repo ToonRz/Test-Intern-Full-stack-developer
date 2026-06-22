@@ -21,9 +21,9 @@ spec:
             - name: http
               containerPort: 3000
               protocol: TCP
-          env:
-            - name: VITE_API_URL
-              value: {{ .Values.env.VITE_API_URL | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Chart.Name }}-frontend-config
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
 ---

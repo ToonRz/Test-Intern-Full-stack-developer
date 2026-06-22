@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Plus, X, Bell, Loader2, Zap, ExternalLink, Pencil } from 'lucide-react'
-import { alerts, auth as authApi } from '../services/api'
+import { alerts, auth as authApi, tenants as tenantsApi } from '../services/api'
 import clsx from 'clsx'
 
 const EVENT_TYPE_SUGGESTIONS = [
@@ -8,9 +8,12 @@ const EVENT_TYPE_SUGGESTIONS = [
   'CreateUser', 'DeleteUser', 'UserLoggedIn',
 ]
 
+// "*" = global rule that fires for any tenant's logs (spec §6). Per-tenant
+// rules restrict the trigger to a single tenant only.
 const EMPTY_FORM = {
   name: '',
   description: '',
+  tenant: '*',
   event_types: ['LogonFailed'],
   threshold: 5,
   window_minutes: 5,
@@ -28,6 +31,7 @@ function AlertRules() {
   const [loading, setLoading] = useState(false)
   const [userRole, setUserRole] = useState(null)
   const [errors, setErrors] = useState({})
+  const [tenantList, setTenantList] = useState([])
 
   useEffect(() => {
     loadRules()
@@ -39,6 +43,17 @@ function AlertRules() {
     authApi.me()
       .then((res) => { if (!cancelled) setUserRole(res.data?.role || null) })
       .catch(() => { if (!cancelled) setUserRole(null) })
+    return () => { cancelled = true }
+  }, [])
+
+  // Tenant selector is Admin-only. The list is sourced from /tenants so an
+  // operator can pick the actual tenant names the system knows about instead
+  // of typing free-text and missing silently.
+  useEffect(() => {
+    let cancelled = false
+    tenantsApi.list()
+      .then((res) => { if (!cancelled) setTenantList(Array.isArray(res.data) ? res.data : []) })
+      .catch(() => { if (!cancelled) setTenantList([]) })
     return () => { cancelled = true }
   }, [])
 
@@ -88,6 +103,7 @@ function AlertRules() {
     setFormData({
       name: rule.name || '',
       description: rule.description || '',
+      tenant: rule.tenant || '*',
       event_types: Array.isArray(rule.event_types) ? rule.event_types : [],
       threshold: rule.threshold ?? 5,
       window_minutes: rule.window_minutes ?? 5,
@@ -188,6 +204,31 @@ function AlertRules() {
                   placeholder="What does this rule detect?"
                 />
               </div>
+
+              {/* Tenant selector — Admin can scope a rule to one tenant or
+                  leave it as "*" (global). Viewer doesn't see this row; their
+                  rules are always scoped to their own tenant server-side. */}
+              {userRole === 'Admin' && (
+                <div>
+                  <label className="label-overline">Tenant scope</label>
+                  <select
+                    value={formData.tenant}
+                    onChange={(e) => setFormData({ ...formData, tenant: e.target.value })}
+                    className="input"
+                  >
+                    <option value="*">All tenants (global)</option>
+                    {tenantList.map((t) => (
+                      <option key={t.id ?? t.name} value={t.name}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs mt-1" style={{ color: 'var(--color-muted)' }}>
+                    Global rules fire for any tenant. Per-tenant rules only fire
+                    for logs whose tenant field matches.
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="label-overline">Threshold (count) *</label>

@@ -1,8 +1,10 @@
 {
   "info": {
+    "_postman_id": "log-mgmt-0001-0001-0001-000000000001",
     "name": "Log Management System API",
-    "version": "1.0.0",
-    "description": "API collection for Log Management System per spec.md"
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.1.0",
+    "description": "API collection for Log Management System per spec.md. Bodies use raw JSON (Postman v2.1 standard)."
   },
   "item": [
     {
@@ -12,25 +14,49 @@
           "name": "Login",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/auth/login",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] },
             "body": {
-              "mode": "json",
-              "json": {
-                "username": "admin",
-                "password": "admin123"
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const j = pm.response.json();",
+                  "  if (j.access_token) pm.collectionVariables.set('token', j.access_token);",
+                  "  console.log('✓ login OK, token saved');",
+                  "} else {",
+                  "  console.log('✗ login failed:', pm.response.status, pm.response.text());",
+                  "}"
+                ]
               }
             }
-          }
+          ]
         },
         {
           "name": "Get Current User",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/auth/me",
-            "auth": {
-              "type": "bearer",
-              "bearer": "{{token}}"
-            }
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "me"] },
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "logout"] }
           }
         }
       ]
@@ -42,39 +68,25 @@
           "name": "POST Single Log",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/ingest",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/ingest", "host": ["{{baseUrl}}"], "path": ["api", "v1", "ingest"] },
             "body": {
-              "mode": "json",
-              "json": {
-                "tenant": "demoA",
-                "source": "api",
-                "event_type": "app_login_failed",
-                "user": "alice",
-                "ip": "203.0.113.7",
-                "reason": "wrong_password"
-              }
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": \"demoA\",\n  \"source\": \"api\",\n  \"event_type\": \"app_login_failed\",\n  \"user\": \"alice\",\n  \"src_ip\": \"203.0.113.7\",\n  \"rule_name\": \"Login Failed\",\n  \"severity\": 7,\n  \"action\": \"deny\"\n}",
+              "options": { "raw": { "language": "json" } }
             }
           }
         },
         {
-          "name": "POST Batch Logs",
+          "name": "POST Batch Logs (array)",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/ingest",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/ingest", "host": ["{{baseUrl}}"], "path": ["api", "v1", "ingest"] },
             "body": {
-              "mode": "json",
-              "json": [
-                {
-                  "tenant": "demoA",
-                  "source": "api",
-                  "event_type": "event1"
-                },
-                {
-                  "tenant": "demoA",
-                  "source": "api",
-                  "event_type": "event2"
-                }
-              ]
+              "mode": "raw",
+              "raw": "[\n  {\n    \"tenant\": \"demoA\",\n    \"source\": \"aws\",\n    \"event_type\": \"console_login\",\n    \"user\": \"bob\",\n    \"src_ip\": \"203.0.113.8\",\n    \"action\": \"login\",\n    \"severity\": 3\n  },\n  {\n    \"tenant\": \"demoA\",\n    \"source\": \"m365\",\n    \"event_type\": \"mail_sent\",\n    \"user\": \"carol\",\n    \"action\": \"allow\",\n    \"severity\": 1\n  }\n]",
+              "options": { "raw": { "language": "json" } }
             }
           }
         },
@@ -82,27 +94,39 @@
           "name": "POST Batch Files (AWS/M365/AD)",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/ingest/batch",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/ingest/batch", "host": ["{{baseUrl}}"], "path": ["api", "v1", "ingest", "batch"] },
             "body": {
-              "mode": "json",
-              "json": {
-                "source": "aws",
-                "tenant": "demoB",
-                "files": [
-                  {
-                    "logs": [
-                      {
-                        "tenant": "demoB",
-                        "source": "aws",
-                        "event_type": "CreateUser",
-                        "user": "admin"
-                      }
-                    ]
-                  }
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"aws\",\n  \"tenant\": \"demoB\",\n  \"files\": [\n    {\n      \"logs\": [\n        {\n          \"tenant\": \"demoB\",\n          \"source\": \"aws\",\n          \"event_type\": \"CreateUser\",\n          \"user\": \"admin\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Trigger Brute-Force (6 attempts same IP)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/ingest", "host": ["{{baseUrl}}"], "path": ["api", "v1", "ingest"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": \"demoA\",\n  \"source\": \"api\",\n  \"event_type\": \"app_login_failed\",\n  \"user\": \"eve\",\n  \"src_ip\": \"203.0.113.99\",\n  \"rule_name\": \"Login Failed\",\n  \"severity\": 7,\n  \"action\": \"deny\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Click Send 6 times (Postman Runner also works) to fire the brute-force alert.",
+                  "console.log('Re-send 6× to cross threshold of 5');"
                 ]
               }
             }
-          }
+          ]
         }
       ]
     },
@@ -113,54 +137,64 @@
           "name": "Query Logs",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/logs",
-            "auth": {
-              "type": "bearer",
-              "bearer": "{{token}}"
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/logs?tenant=demoA&source=api&page=1&size=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "logs"],
+              "query": [
+                { "key": "tenant", "value": "demoA" },
+                { "key": "source", "value": "api" },
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "50" }
+              ]
             },
-            "query": [
-              {
-                "key": "tenant",
-                "value": "demoA"
-              },
-              {
-                "key": "source",
-                "value": "api"
-              },
-              {
-                "key": "page",
-                "value": "1"
-              },
-              {
-                "key": "size",
-                "value": "50"
-              }
-            ]
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
           }
         },
         {
-          "name": "Query Logs with Search",
+          "name": "Search Logs (q=login)",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/logs",
-            "auth": {
-              "type": "bearer",
-              "bearer": "{{token}}"
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/logs?q=login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "logs"],
+              "query": [{ "key": "q", "value": "login" }]
             },
-            "query": [
-              {
-                "key": "q",
-                "value": "login"
-              },
-              {
-                "key": "start",
-                "value": "2025-08-01T00:00:00Z"
-              },
-              {
-                "key": "end",
-                "value": "2025-08-31T23:59:59Z"
-              }
-            ]
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
+          }
+        },
+        {
+          "name": "Logs Timeline",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/logs/timeline?bucket=hour",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "logs", "timeline"],
+              "query": [{ "key": "bucket", "value": "hour" }]
+            },
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
+          }
+        },
+        {
+          "name": "Logs Top Sources",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/logs/top?field=source&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "logs", "top"],
+              "query": [
+                { "key": "field", "value": "source" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
           }
         }
       ]
@@ -172,65 +206,44 @@
           "name": "Get Alert Rules",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/alerts",
-            "auth": {
-              "type": "bearer",
-              "bearer": "{{token}}"
-            }
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/alerts", "host": ["{{baseUrl}}"], "path": ["api", "v1", "alerts"] },
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
           }
         },
         {
           "name": "Create Alert Rule",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/alerts",
-            "auth": {
-              "type": "bearer",
-              "bearer": "{{token}}"
-            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/alerts", "host": ["{{baseUrl}}"], "path": ["api", "v1", "alerts"] },
             "body": {
-              "mode": "json",
-              "json": {
-                "name": "Brute Force Login Detection",
-                "description": "Detect brute force login attempts",
-                "event_types": ["LogonFailed", "app_login_failed"],
-                "threshold": 5,
-                "window_minutes": 5,
-                "action": "store",
-                "webhook_url": "https://example.com/webhook",
-                "enabled": true
-              }
-            }
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Brute Force Login Detection\",\n  \"description\": \"Detect brute force login attempts\",\n  \"event_types\": [\"LogonFailed\", \"app_login_failed\"],\n  \"threshold\": 5,\n  \"window_minutes\": 5,\n  \"action\": \"store\",\n  \"webhook_url\": \"https://example.com/webhook\",\n  \"enabled\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
           }
         },
         {
           "name": "Get Triggered Alerts",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/alerts/triggered",
-            "auth": {
-              "type": "bearer",
-              "bearer": "{{token}}"
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/alerts/triggered?limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "alerts", "triggered"],
+              "query": [{ "key": "limit", "value": "100" }]
             },
-            "query": [
-              {
-                "key": "limit",
-                "value": "100"
-              }
-            ]
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] }
           }
         }
       ]
     }
   ],
   "variable": [
-    {
-      "key": "baseUrl",
-      "value": "http://localhost:8000"
-    },
-    {
-      "key": "token",
-      "value": ""
-    }
+    { "key": "baseUrl", "value": "https://localhost" },
+    { "key": "token", "value": "" }
   ]
 }

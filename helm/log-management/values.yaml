@@ -98,6 +98,13 @@ ingress-nginx:
         port: 514
         targetPort: 1514
 
+# Ingress — host + TLS for the app at the cluster edge.
+ingress:
+  # Replace with your real domain before `helm install`.
+  host: "log.example.com"
+  clusterIssuer: "letsencrypt-prod"
+  tlsSecretName: "log-management-tls"
+
 # Global annotations
 global:
   annotations:
