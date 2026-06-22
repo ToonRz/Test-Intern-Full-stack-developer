@@ -85,7 +85,7 @@ Query params ที่รับ: `tenant`, `source`, `event_type`, `action`, `ge
 | `GET` | `/alerts` | any | List alert rules (Viewer เห็นเฉพาะ tenant ตัวเอง + `*`) |
 | `POST` | `/alerts` | Admin | Create alert rule |
 | `PUT` | `/alerts/{rule_id}` | Admin | Update alert rule |
-| `DELETE` | `/alerts/{rule_id}` | Admin | Delete alert rule (ไม่ expose ใน UI — เก็บไว้สำหรับ ops) |
+| `DELETE` | `/alerts/{rule_id}` | Admin | Delete alert rule + cascade ลบ `triggered_alerts` ที่อ้างถึง rule_id นี้ (กัน orphan ที่ retry loop จะหา rule ไม่เจอ) — exposed ใน UI ผ่านปุ่ม Delete + confirmation modal |
 | `GET` | `/alerts/triggered` | any | List triggered alerts (filters: tenant/severity/source/acknowledged/start/end) |
 | `GET` | `/alerts/triggered/{alert_id}` | any | Alert group detail + all logs in group |
 | `POST` | `/alerts/{alert_id}/acknowledge` | any | Mark alert as handled (Viewer ต้องอยู่ tenant ตัวเอง) |

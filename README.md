@@ -124,7 +124,7 @@ Terraform modules (VPC + RDS + EKS): `terraform/`
 | **Auth** | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | login เปิด, อื่น ๆ ต้อง auth |
 | **Ingest** | `POST /ingest`, `POST /ingest/batch`, UDP/TCP `:514` | open (rate-limited ที่ nginx + slowapi) |
 | **Logs** | `GET /logs`, `GET /logs/facets`, `GET /logs/stats` | any |
-| **Alerts** | `GET/POST/PUT/DELETE /alerts`, `GET /alerts/triggered`, `POST /alerts/{id}/acknowledge` | any (CRUD = Admin) |
+| **Alerts** | `GET/POST/PUT/DELETE /alerts`, `GET /alerts/triggered`, `POST /alerts/{id}/acknowledge` | any (CRUD = Admin); `DELETE` ลบ rule + triggered_alerts ที่อ้างถึง (cascade) |
 | **Users** | `GET/POST/PATCH/DELETE /users` | Admin |
 | **Tenants** | `GET/POST/DELETE /tenants` | Admin |
 | **Ops** | `GET /health`, `GET /metrics`, `GET /docs` (OpenAPI) | varies |

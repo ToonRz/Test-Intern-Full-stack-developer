@@ -135,7 +135,7 @@ curl -X POST http://localhost:8000/api/v1/ingest/batch \
 2. Login: `admin` / `admin123`
 3. ไปที่ **Dashboard** — เห็น Top N (src_ip/user/event_type), Timeline, By Source, By Severity
 4. ไปที่ **Log Search** — ลอง filter (tenant, source, severity bucket, time range, full-text)
-5. ไปที่ **Alert Rules** — ดู rule seeded + สร้าง/แก้ rule ใหม่
+5. ไปที่ **Alert Rules** — ดู rule seeded + สร้าง/แก้/ลบ rule ใหม่ (ลบจะ cascade ลบ alert history ที่อ้างถึงด้วย)
 6. ไปที่ **Triggered** — ดู alerts ที่ trigger แล้ว กด acknowledge ได้
 7. (Admin) ไปที่ **Users** — จัดการ users/tenants
 

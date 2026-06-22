@@ -221,7 +221,7 @@ Built-in seeded rule: **Login Failed Brute-Force** — `event_type ∈ {LogonFai
 │   │   ├── Login.jsx
 │   │   ├── Dashboard.jsx       # Top-N, timeline, severity, by-source
 │   │   ├── LogSearch.jsx       # Filters + pagination + full-text
-│   │   ├── AlertRules.jsx      # CRUD alert rules
+│   │   ├── AlertRules.jsx      # CRUD alert rules (Delete cascades to triggered_alerts + confirmation modal)
 │   │   ├── AlertTriggered.jsx  # Triggered alerts + acknowledge
 │   │   └── UserManagement.jsx  # Admin: users CRUD
 │   ├── src/components/Layout.jsx

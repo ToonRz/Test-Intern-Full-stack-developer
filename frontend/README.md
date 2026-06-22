@@ -22,7 +22,7 @@ React SPA dashboard for the Log Management System
 | `/login` | `Login.jsx` | Login | — | Login form → POST `/auth/login` (cookie set by server) |
 | `/` | `Dashboard.jsx` | Dashboard | any | Top-N (src_ip/user/event_type), Timeline, By Source, By Severity |
 | `/logs` | `LogSearch.jsx` | Log Search | any | Filter (tenant/source/event_type/action/severity bucket/time) + pagination + full-text |
-| `/alerts` | `AlertRules.jsx` | Alert Rules | Admin | View/Create/Edit alert rules (Viewer เห็นอย่างเดียว) |
+| `/alerts` | `AlertRules.jsx` | Alert Rules | Admin | View/Create/Edit/**Delete** alert rules (Viewer เห็นอย่างเดียว, ลบไม่ได้) — Delete มี confirmation modal และ cascade ลบ alert history ด้วย |
 | `/alerts/triggered` | `AlertTriggered.jsx` | Alert Triggered | any | Grouped triggered alerts + acknowledge + expand-to-logs |
 | `/users` | `UserManagement.jsx` | — | Admin | CRUD users (create/edit/delete + reset password + tenant assignment) |
 
