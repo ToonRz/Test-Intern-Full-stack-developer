@@ -186,8 +186,6 @@ make clean                 # docker compose down -v
 - [Architecture & data flow](docs/architecture.md)
 - [Appliance setup](docs/setup_appliance.md)
 - [SaaS setup](docs/setup_saas.md)
-- [Observability dashboard](docs/observability-dashboard.md)
-- [Spec (single source of truth)](_internal/spec.md)
 - [Backend API](backend/README.md)
 - [Frontend](frontend/README.md)
 - [Ingest / Normalizers](ingest/README.md)
