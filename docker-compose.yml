@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Syslog port (514 UDP + 514 TCP per spec §5.1) is exposed ONLY via the
 # backend service below — the nginx stream block forwards UDP/514 traffic to
 # the backend.

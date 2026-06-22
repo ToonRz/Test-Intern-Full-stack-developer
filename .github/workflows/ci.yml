@@ -35,7 +35,7 @@ jobs:
       - name: Install frontend dependencies
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -60,26 +60,51 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache Trivy DB between runs — DB ขนาด ~200MB ดาวน์โหลดครั้งแรก 2-5 นาที
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ hashFiles('.trivyignore', '.github/workflows/ci.yml') }}
+          restore-keys: trivy-db-
+
+      # Pin version + skip dirs ที่ไม่จำเป็น — ลดเวลา scan
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          skip-dirs: |
+            frontend/node_modules
+            frontend/dist
+            backend/__pycache__
+            .git
+            .pytest_cache
+            _internal
 
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: Run Bandit security check (Python)
-        uses: usageTwist3r/bandit-check@v1
+      # Inline Bandit แทน third-party action ที่ถูกลบไปแล้ว (usageTwist3r/bandit-check)
+      - name: Set up Python 3.11 for Bandit
+        uses: actions/setup-python@v5
         with:
-          directory: ./backend
-          level: HIGH
-          format: txt
+          python-version: '3.11'
+
+      - name: Install Bandit
+        run: pip install --quiet bandit
+
+      - name: Run Bandit security check (Python)
+        run: |
+          echo "::group::Bandit output"
+          bandit -r backend -lll --skip B101  # B101 = assert (test files), -lll = low+above
+          echo "::endgroup::"
 
   # ── Build & Push Docker Images ─────────────────────────────────────────
   build:

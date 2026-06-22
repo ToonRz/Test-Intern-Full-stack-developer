@@ -161,7 +161,7 @@ make up
 curl -sk https://localhost/health
 # {"status":"healthy"}
 
-docker compose logs --tail=5 backend | grep -i startup
+docker compose logs backend | grep -i startup
 ```
 
 > **🎙️ พูด**: "ตัว backend มี lifespan startup ที่ทำ 3 อย่าง — initialize database connection pool, seed demo users, และ retry pending alert deliveries ที่ค้างจาก restart ครั้งก่อน"
@@ -184,7 +184,8 @@ docker compose logs --tail=5 backend | grep -i startup
 
 ```bash
 # 💻 Terminal — พิสูจน์ด้วย curl ว่า Set-Cookie มี flag ครบ:
-curl -skI -X POST https://localhost/api/v1/auth/login \
+# ใช้ -D - -o /dev/null เพื่อ dump headers โดยไม่ทิ้ง body (ห้ามใช้ -I เพราะมันบังคับ HEAD request ทำให้ไม่เห็น Set-Cookie)
+curl -sk -D - -o /dev/null -X POST https://localhost/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin123"}' | grep -i "set-cookie"
 # คาดหวัง: ... HttpOnly; Max-Age=3600; Path=/api/v1; SameSite=lax
@@ -215,15 +216,31 @@ echo '<134>Jun 22 10:00:00 fw01 vendor=demo product=ngfw action=deny src=10.0.1.
 
 > **🎙์ พูด**: "ข้อความนี้ถูกส่งผ่าน UDP port 514 — Nginx stream block forward ไปยัง backend listener ที่ใช้ asyncio loop.add_reader — ไม่ block event loop แม้จะมี log หลายพันบรรทัดต่อวินาที"
 
+```bash
+# 💻 Terminal — ยืนยันว่า log เข้า database (ดู row ล่าสุด + parsed fields):
+docker compose exec -T postgres psql -U postgres -d logs \
+  -c "SELECT id, src_ip, action, vendor, product, timestamp FROM logs WHERE source='firewall' ORDER BY id DESC LIMIT 1;"
+#    คาดหวัง: id=14 | 10.0.1.10 | deny | demo | ngfw | 2026-06-22 10:00:00+00
+```
+
+> **🎙️ พูด**: "เห็นไหมครับ — row ใหม่โผล่ทันที ไม่ต้องรอ — backend เขียน async ลง Postgres JSONB column แล้ว frontend ดึงจาก API `/api/v1/logs` อีกที"
+
 #### Source 2 — Syslog TCP (router)
 
 ```bash
 # 💻 Terminal — script ตัวอย่างที่รวม 7 บรรทัด UDP + TCP framing:
 bash samples/send_syslog.sh localhost 514
-#    คาดหวัง: "Done! Sent 7 syslog messages"
+#    คาดหวัง: "Done! Sent 7 syslog messages (3 UDP + 4 TCP)"
 ```
 
 > **🎙์ พูด**: "TCP ก็รับเหมือนกัน — backend auto-detect ทั้ง RFC6587 octet-counted framing และ LF-delimited framing ไม่ต้องบอกล่วงหน้า"
+
+```bash
+# 💻 Terminal — ยืนยันว่าทั้ง 2 framing ของ TCP เข้า DB:
+docker compose exec -T postgres psql -U postgres -d logs \
+  -c "SELECT id, source, vendor, raw->>'original' FROM logs WHERE raw->>'original' LIKE '%link-up%' OR raw->>'original' LIKE '%Threat-blocked%' ORDER BY id DESC LIMIT 3;"
+#    คาดหวัง: เห็นทั้ง network (router, octet-counted) และ firewall (LF-delimited)
+```
 
 #### Source 3 — HTTP POST /ingest (Postman)
 
