@@ -1,0 +1,69 @@
+# Production overrides — high-availability, external managed services.
+# Triggers on push to `main` branch.
+#
+# Assumptions:
+#   - Postgres lives outside the cluster (RDS / Cloud SQL). Pass the URL via
+#     `--set backend.env.DATABASE_URL=...` at install time (CI secret).
+#   - Redis is managed (ElastiCache / Memorystore). The chart's redis
+#     subchart is disabled; backend.env.REDIS_URL points to the managed
+#     endpoint.
+#   - Ingress is the cloud's L7 LB (ALB / GCP LB). The chart's ingress-nginx
+#     subchart is disabled; the cluster's ingress controller is annotated
+#     separately or replaced with a managed Ingress resource (out of scope).
+#   - cert-manager with `letsencrypt-prod` ClusterIssuer is installed cluster-wide.
+
+namespace: log-management
+
+backend:
+  namespace: log-management
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+  image:
+    repository: ghcr.io/REPO/backend
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits: { cpu: 1000m, memory: 1Gi }
+    requests: { cpu: 500m, memory: 512Mi }
+
+  env:
+    DEBUG: "false"
+    REDIS_URL: "redis://REPLACE-WITH-MANAGED-REDIS:6379/0"
+    ALLOWED_ORIGINS: "https://log.example.com"
+
+frontend:
+  namespace: log-management
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+  image:
+    repository: ghcr.io/REPO/frontend
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits: { cpu: 500m, memory: 256Mi }
+    requests: { cpu: 200m, memory: 128Mi }
+
+# Disable in-cluster subcharts — production uses managed services.
+redis:
+  enabled: false
+
+ingress-nginx:
+  enabled: false
+
+ingress:
+  host: "log.example.com"
+  clusterIssuer: "letsencrypt-prod"
+  tlsSecretName: "log-management-tls"
+
+# Production env defaults. SECRET_KEY + DATABASE_URL are injected by the CD
+# workflow from GitHub Secrets — never commit real values here.

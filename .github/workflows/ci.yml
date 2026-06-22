@@ -181,19 +181,75 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/develop'
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to staging
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+
+      - name: Configure kubeconfig
         run: |
-          echo "Deploying to staging environment..."
-          # Add your deployment command here:
-          # e.g., kubectl apply -f k8s/ --namespace staging
-          # or: ssh deploy@staging "docker compose -f /app/docker-compose.yml pull && docker compose -f /app/docker-compose.yml up -d"
-          echo "Staging deployment would happen here"
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          kubectl version --client
+
+      - name: Create GHCR imagePullSecret (idempotent)
         env:
-          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          NAMESPACE: log-management-staging
+        run: |
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --namespace="$NAMESPACE" \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="${{ secrets.GITHUB_TOKEN }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+      - name: Build Helm dependencies
+        run: helm dependency build helm/log-management
+
+      - name: Deploy to staging
+        env:
+          NAMESPACE: log-management-staging
+          IMAGE_TAG: develop-${{ github.sha }}
+          IMAGE_BACKEND: ghcr.io/${{ github.repository }}/backend
+          IMAGE_FRONTEND: ghcr.io/${{ github.repository }}/frontend
+        run: |
+          helm upgrade --install log-management helm/log-management \
+            --namespace "$NAMESPACE" \
+            -f helm/log-management/values-staging.yaml \
+            --set backend.image.repository="${IMAGE_BACKEND}" \
+            --set backend.image.tag="${IMAGE_TAG}" \
+            --set frontend.image.repository="${IMAGE_FRONTEND}" \
+            --set frontend.image.tag="${IMAGE_TAG}" \
+            --set backend.env.SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            --set backend.env.DATABASE_URL="${{ secrets.STAGING_DATABASE_URL }}" \
+            --set backend.env.ALLOWED_ORIGINS="https://staging.log.example.com" \
+            --wait --timeout 10m
+
+      - name: Smoke test (backend readiness)
+        env:
+          NAMESPACE: log-management-staging
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app=backend-backend \
+            -n "$NAMESPACE" \
+            --timeout=5m
 
   # ── Deploy to Production ───────────────────────────────────────────────
   deploy-prod:
@@ -201,17 +257,81 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main'
-    environment:
-      name: production
-      url: https://logs.example.com
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to production
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+
+      - name: Configure kubeconfig
         run: |
-          echo "Deploying to production environment..."
-          echo "Production deployment would happen here with approval gate"
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          kubectl version --client
+
+      - name: Create GHCR imagePullSecret (idempotent)
         env:
-          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          NAMESPACE: log-management
+        run: |
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --namespace="$NAMESPACE" \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="${{ secrets.GITHUB_TOKEN }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+      - name: Build Helm dependencies
+        run: helm dependency build helm/log-management
+
+      - name: Validate required secrets
+        env:
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: |
+          if [ -z "$PROD_DATABASE_URL" ] || [ -z "$SECRET_KEY" ]; then
+            echo "::error::PROD_DATABASE_URL and SECRET_KEY secrets are required"
+            exit 1
+          fi
+
+      - name: Deploy to production
+        env:
+          NAMESPACE: log-management
+          IMAGE_TAG: main-${{ github.sha }}
+          IMAGE_BACKEND: ghcr.io/${{ github.repository }}/backend
+          IMAGE_FRONTEND: ghcr.io/${{ github.repository }}/frontend
+        run: |
+          helm upgrade --install log-management helm/log-management \
+            --namespace "$NAMESPACE" \
+            -f helm/log-management/values-prod.yaml \
+            --set backend.image.repository="${IMAGE_BACKEND}" \
+            --set backend.image.tag="${IMAGE_TAG}" \
+            --set frontend.image.repository="${IMAGE_FRONTEND}" \
+            --set frontend.image.tag="${IMAGE_TAG}" \
+            --set backend.env.SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            --set backend.env.DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
+            --wait --timeout 15m
+
+      - name: Smoke test (backend readiness)
+        env:
+          NAMESPACE: log-management
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app=backend-backend \
+            -n "$NAMESPACE" \
+            --timeout=5m

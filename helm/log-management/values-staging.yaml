@@ -1,0 +1,66 @@
+# Staging overrides — single-cluster, namespace-scoped deploy.
+# Triggers on push to `develop` branch. Reuses the chart's bundled Redis +
+# ingress-nginx subcharts so staging is fully self-contained (no need to
+# provision external managed services).
+#
+# Override at install time:
+#   helm upgrade --install log-management ./helm/log-management \
+#     -f helm/log-management/values-staging.yaml \
+#     --set backend.env.SECRET_KEY=... \
+#     --set backend.env.DATABASE_URL=...
+
+# Top-level namespace is used by the root chart's templates (e.g. ingress).
+# The backend.* / frontend.* `namespace` keys below mirror this — Helm
+# subcharts only see top-level parent values via the dependency alias, so we
+# duplicate `namespace` under each subchart to make the subchart deployment
+# templates resolve to the right namespace.
+namespace: log-management-staging
+
+backend:
+  namespace: log-management-staging
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+
+  image:
+    repository: ghcr.io/REPO/backend
+    pullPolicy: Always
+
+  resources:
+    limits: { cpu: 500m, memory: 512Mi }
+    requests: { cpu: 100m, memory: 256Mi }
+
+frontend:
+  namespace: log-management-staging
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+
+  image:
+    repository: ghcr.io/REPO/frontend
+    pullPolicy: Always
+
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false  # ephemeral on staging — fast teardown
+    resources:
+      limits: { cpu: 100m, memory: 128Mi }
+
+# Use a self-signed / staging ClusterIssuer. cert-manager must already be
+# installed (see docs/cd.md).
+ingress-nginx:
+  enabled: true
+  controller:
+    service:
+      type: LoadBalancer
+      annotations: {}
+    sslProtocols: "TLSv1.2 TLSv1.3"
+
+ingress:
+  host: "staging.log.example.com"
+  clusterIssuer: "letsencrypt-staging"
+  tlsSecretName: "log-management-staging-tls"

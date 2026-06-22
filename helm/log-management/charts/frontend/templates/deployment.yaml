@@ -13,6 +13,10 @@ spec:
       labels:
         app: {{ .Chart.Name }}-frontend
     spec:
+      {{- if or .Values.imagePullSecretName .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecretName | default .Values.global.imagePullSecretName }}
+      {{- end }}
       containers:
         - name: frontend
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

@@ -19,6 +19,10 @@ spec:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
     spec:
       serviceAccountName: {{ .Chart.Name }}-backend
+      {{- if or .Values.imagePullSecretName .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecretName | default .Values.global.imagePullSecretName }}
+      {{- end }}
       containers:
         - name: backend
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

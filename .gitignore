@@ -46,3 +46,6 @@ yarn-debug.log*
 nginx/certs/*.crt
 nginx/certs/*.key
 nginx/certs/*.pem
+
+# ── Helm chart dependencies (downloaded by `helm dependency build`) ───────
+helm/log-management/charts/*.tgz

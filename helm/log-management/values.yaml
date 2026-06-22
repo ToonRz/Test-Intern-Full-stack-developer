@@ -111,3 +111,9 @@ global:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8000"
     prometheus.io/path: "/metrics"
+
+  # Name of the docker-registry Secret used by backend/frontend pods to pull
+  # images from GHCR. Created out-of-band by the CD workflow (see docs/cd.md).
+  # Set to empty string to disable (e.g. when using public images or a
+  # node-level credential).
+  imagePullSecretName: "ghcr-pull-secret"
