@@ -154,6 +154,74 @@ async def test_delete_alert_rule(client, admin_token):
     assert again.status_code == 404
 
 
+async def test_delete_alert_rule_cascades_triggered_alerts(client, admin_token):
+    """Deleting a rule must also delete TriggeredAlertDB rows that reference it.
+
+    Without cascade, the retry loop in AlertEngine would try to look up the
+    rule by id and fail; the AlertTriggered UI would also surface "ghost"
+    rows whose rule_id points to nothing.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from backend.storage.database import async_session, TriggeredAlertDB
+
+    create = await client.post(
+        "/api/v1/alerts",
+        json={
+            "name": "Will be deleted",
+            "event_types": ["LogonFailed"],
+            "threshold": 5,
+            "window_minutes": 5,
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rule_id = create.json()["id"]
+
+    # Seed a triggered alert that references this rule.
+    async with async_session() as db:
+        alert = TriggeredAlertDB(
+            rule_id=rule_id,
+            rule_name="Will be deleted",
+            group_key=f"9.9.9.9:{rule_id}",
+            src_ip="9.9.9.9",
+            count=7,
+            unique_count=1,
+            severity="high",
+            first_seen=datetime.now(timezone.utc),
+            last_seen=datetime.now(timezone.utc),
+            tenant="*",
+            source="ad",
+            event_type="LogonFailed",
+            logs=[],
+            acknowledged=False,
+            triggered_at=datetime.now(timezone.utc),
+        )
+        db.add(alert)
+        await db.commit()
+        await db.refresh(alert)
+        triggered_id = alert.id
+
+    # Sanity: both rows exist.
+    async with async_session() as db:
+        assert (await db.execute(
+            select(TriggeredAlertDB).where(TriggeredAlertDB.id == triggered_id)
+        )).scalar_one_or_none() is not None
+
+    # Delete the rule.
+    response = await client.delete(
+        f"/api/v1/alerts/{rule_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    # The triggered alert must be gone too — no orphan.
+    async with async_session() as db:
+        remaining = (await db.execute(
+            select(TriggeredAlertDB).where(TriggeredAlertDB.id == triggered_id)
+        )).scalar_one_or_none()
+        assert remaining is None, "triggered alert should be cascaded on rule delete"
+
+
 async def test_update_alert_requires_admin(client, viewer_token):
     """PUT /alerts/{id} as Viewer returns 403."""
     response = await client.put(

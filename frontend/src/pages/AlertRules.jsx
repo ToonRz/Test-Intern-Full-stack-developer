@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Bell, Loader2, Zap, ExternalLink, Pencil } from 'lucide-react'
+import { Plus, X, Bell, Loader2, Zap, ExternalLink, Pencil, Trash2 } from 'lucide-react'
 import { alerts, auth as authApi, tenants as tenantsApi } from '../services/api'
 import clsx from 'clsx'
 
@@ -122,6 +122,31 @@ function AlertRules() {
     setFormData(EMPTY_FORM)
     setCustomEventType('')
     setErrors({})
+  }
+
+  const [deletingRule, setDeletingRule] = useState(null)
+  const [deleteError, setDeleteError] = useState(null)
+
+  const requestDelete = (rule) => {
+    setDeleteError(null)
+    setDeletingRule(rule)
+  }
+
+  const cancelDelete = () => {
+    setDeletingRule(null)
+    setDeleteError(null)
+  }
+
+  const confirmDelete = async () => {
+    if (!deletingRule) return
+    try {
+      await alerts.delete(deletingRule.id)
+      setDeletingRule(null)
+      setDeleteError(null)
+      loadRules()
+    } catch (err) {
+      setDeleteError(err.response?.data?.detail || err.message || 'Failed to delete rule')
+    }
   }
 
   const toggleEventType = (et) => {
@@ -443,7 +468,10 @@ function AlertRules() {
                   )}
                 </div>
 
-                {/* Spec §7 Alert Rules: "ดู/สร้าง/แก้ไข" — edit only, no delete. */}
+                {/* Admin actions. Delete deviates from spec §7 ("ดู/สร้าง/แก้ไข" only)
+                    but the backend DELETE /alerts/{id} already exists for ops use —
+                    this exposes it to Admins via a confirmation modal so an
+                    accidental click cannot destroy a rule. */}
                 {userRole === 'Admin' && (
                   <div className="flex items-center gap-1 shrink-0">
                     <button
@@ -454,6 +482,15 @@ function AlertRules() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
+                    <button
+                      onClick={() => requestDelete(rule)}
+                      className="btn btn-ghost"
+                      aria-label="Delete rule"
+                      title="Delete rule"
+                      style={{ color: 'var(--color-accent-red, #dc2626)' }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 )}
               </div>
@@ -461,6 +498,64 @@ function AlertRules() {
           ))
         )}
       </section>
+
+      {deletingRule && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(15, 23, 42, 0.45)' }}
+          onClick={cancelDelete}
+        >
+          <div
+            className="card w-full max-w-md"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-rule-title"
+          >
+            <header className="flex items-center justify-between mb-4">
+              <h2 id="delete-rule-title" className="font-display text-lg" style={{ color: 'var(--color-ink)' }}>
+                Delete alert rule?
+              </h2>
+              <button onClick={cancelDelete} className="btn btn-ghost" aria-label="Close">
+                <X className="w-4 h-4" />
+              </button>
+            </header>
+
+            <p className="text-sm mb-2" style={{ color: 'var(--color-muted)' }}>
+              You are about to permanently delete:
+            </p>
+            <p className="text-sm font-medium mb-4" style={{ color: 'var(--color-ink)' }}>
+              {deletingRule.name}
+            </p>
+            <p className="text-sm mb-6" style={{ color: 'var(--color-muted)' }}>
+              Any alert history triggered by this rule will also be removed. This cannot be undone.
+            </p>
+
+            {deleteError && (
+              <div
+                className="text-sm mb-4 px-3 py-2 rounded"
+                style={{ backgroundColor: 'var(--color-accent-red, #dc2626)', color: '#fff' }}
+                role="alert"
+              >
+                {deleteError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={cancelDelete} className="btn btn-ghost">
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="btn"
+                style={{ backgroundColor: 'var(--color-accent-red, #dc2626)', color: '#fff' }}
+              >
+                Delete rule
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

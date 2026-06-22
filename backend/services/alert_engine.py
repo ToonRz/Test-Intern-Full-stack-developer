@@ -323,6 +323,13 @@ class AlertEngine:
         db_rule = result.scalar_one_or_none()
         if not db_rule:
             return False
+        # TriggeredAlertDB.rule_id has no FK constraint, so deleting the rule
+        # leaves orphans that the retry loop would then fail to resolve when
+        # re-fetching the rule. Clean them up in the same transaction.
+        from sqlalchemy import delete as sql_delete
+        await self.db.execute(
+            sql_delete(TriggeredAlertDB).where(TriggeredAlertDB.rule_id == rule_id)
+        )
         await self.db.delete(db_rule)
         await self.db.commit()
         return True
