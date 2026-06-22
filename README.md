@@ -144,9 +144,9 @@ Terraform modules (VPC + RDS + EKS): `terraform/`
 | Auth | JWT (HS256) ใน HttpOnly cookie | กัน XSS exfiltrate จาก localStorage |
 | Enrichment | MaxMind GeoLite2 + reverse DNS | spec §14 nice-to-have |
 | Ingest | Python async syslog listener (embedded) | same codebase, simpler ops |
-| TLS | Self-signed (appliance) / Let's Encrypt (SaaS) | spec §9 อนุญาตทั้งสองแบบ |
-| Observability | OpenTelemetry + `/metrics` + `/health` | spec §14 nice-to-have |
-| IaC | Helm chart + Terraform | spec §14 nice-to-have |
+| TLS | Self-signed (appliance) / Let's Encrypt (SaaS) | อนุญาตทั้งสองแบบ |
+| Observability | OpenTelemetry + `/metrics` + `/health` | nice-to-have |
+| IaC | Helm chart + Terraform | nice-to-have |
 
 ---
 
@@ -202,7 +202,7 @@ make clean                 # docker compose down -v
 | `DATABASE_URL` | — (มี default) | `postgresql+asyncpg://...` |
 | `ADMIN_PASSWORD` | — | override seed `admin` password |
 | `VIEWER_PASSWORD` | — | override seed `viewer` password |
-| `DATA_RETENTION_DAYS` | — | default `7` (spec §10) |
+| `DATA_RETENTION_DAYS` | — | default `7` |
 | `GEOIP_DB_PATH` | — | path ถึง MaxMind GeoLite2-City.mmdb |
 | `ALLOWED_ORIGINS` | — | CORS comma-separated |
 
