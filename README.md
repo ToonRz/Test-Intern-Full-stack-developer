@@ -142,7 +142,7 @@ Terraform modules (VPC + RDS + EKS): `terraform/`
 | Cache | Redis 7 | enrichment (GeoIP / rDNS) cache |
 | Frontend | React 18 + Vite + Recharts | Component model, declarative charts |
 | Auth | JWT (HS256) ใน HttpOnly cookie | กัน XSS exfiltrate จาก localStorage |
-| Enrichment | MaxMind GeoLite2 + reverse DNS | spec §14 nice-to-have |
+| Enrichment | MaxMind GeoLite2 + reverse DNS | nice-to-have |
 | Ingest | Python async syslog listener (embedded) | same codebase, simpler ops |
 | TLS | Self-signed (appliance) / Let's Encrypt (SaaS) | อนุญาตทั้งสองแบบ |
 | Observability | OpenTelemetry + `/metrics` + `/health` | nice-to-have |
