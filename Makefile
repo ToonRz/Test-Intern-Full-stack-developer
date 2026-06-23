@@ -6,9 +6,9 @@ up: certs
 	docker compose up -d --build
 	@echo ""
 	@echo "Services started. Access:"
-	@echo "  - Frontend:        http://localhost:3000"
-	@echo "  - Backend API:     http://localhost:8000  (docs: /docs)"
-	@echo "  - HTTPS via nginx: https://localhost"
+	@echo "  - Dashboard (HTTPS): https://localhost"
+	@echo "  - Backend API:       https://localhost/api/v1"
+	@echo "  - API docs (direct): http://localhost:8000/docs"
 	@echo "  - Syslog UDP:      udp://localhost:514"
 	@echo "  - Syslog TCP:      tcp://localhost:514"
 

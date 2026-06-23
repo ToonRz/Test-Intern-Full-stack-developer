@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     GEOIP_DB_PATH: str = "/var/lib/geoip/GeoLite2-City.mmdb"
 
     # CORS
-    ALLOWED_ORIGINS: str = "http://localhost:3000,http://frontend:3000"
+    ALLOWED_ORIGINS: str = "https://localhost,http://localhost:3000,http://frontend:3000"
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: int = 100

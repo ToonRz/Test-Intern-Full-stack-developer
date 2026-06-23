@@ -42,6 +42,8 @@ services:
       SYSLOG_PORT: 514
       DATA_RETENTION_DAYS: ${DATA_RETENTION_DAYS:-7}
       REDIS_URL: redis://redis:6379/0
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://localhost,http://localhost:3000,http://frontend:3000}
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-true}
     ports:
       - "8000:8000"
       - "514:514/udp"   # Syslog UDP — spec §5.1
@@ -59,7 +61,7 @@ services:
       - ./ingest:/app/ingest
       - ./tests:/app/tests
       - ./pytest.ini:/app/pytest.ini
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s
@@ -71,8 +73,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "3000:80"
+    # Frontend is served over HTTPS only via the nginx service (ports 80/443).
     environment:
       VITE_API_URL: http://backend:8000/api/v1
     depends_on:
@@ -89,13 +90,21 @@ services:
     image: alpine:3.19
     volumes:
       - ./nginx/certs:/certs
-      - ./scripts/generate-certs.sh:/generate-certs.sh:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        apk add --no-cache openssl bash >/dev/null \
-          && bash /generate-certs.sh /certs \
-          || (echo "cert generation failed" && exit 1)
+        apk add --no-cache openssl >/dev/null
+        if [ -f /certs/server.crt ] && [ -f /certs/server.key ]; then
+          echo "Certificates already exist — skipping."
+          exit 0
+        fi
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+          -keyout /certs/server.key \
+          -out /certs/server.crt \
+          -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
+          -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1"
+        chmod 600 /certs/server.key
+        echo "Certificates generated."
     restart: "no"
 
   nginx:
