@@ -5,7 +5,10 @@ import {
 } from 'lucide-react'
 import { alerts } from '../services/api'
 import clsx from 'clsx'
-import { severityBucket } from './Dashboard'
+// F-C3: import from the shared utility. The previous local `severityColor`
+// did `if (sev >= 9)` on a *string* bucket (`'critical' >= 9` is false),
+// so every alert card rendered teal regardless of severity.
+import { severityBucket, severityColor, SEVERITY_RANK } from '../utils/severity'
 
 const SEVERITY_OPTIONS = [
   { value: '', label: 'All severities' },
@@ -14,15 +17,6 @@ const SEVERITY_OPTIONS = [
   { value: 'medium', label: 'Medium' },
   { value: 'low', label: 'Low' },
 ]
-
-const SEVERITY_RANK = { critical: 3, high: 2, medium: 1, low: 0 }
-
-function severityColor(sev) {
-  if (sev >= 9) return 'var(--color-error)'
-  if (sev >= 7) return 'var(--color-accent-amber)'
-  if (sev >= 4) return 'var(--color-warning)'
-  return 'var(--color-accent-teal)'
-}
 
 // Group a flat alert list by `rule_name`. Within a group we surface the max
 // severity, the summed event count, and the most recent last_seen — the

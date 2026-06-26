@@ -1,4 +1,4 @@
-.PHONY: up down restart logs ps test clean init build certs seed send-syslog send-sample shell-backend shell-postgres docs
+.PHONY: up down restart logs ps test clean init build certs seed send-syslog send-sample shell-backend shell-postgres docs retention test-frontend
 
 # ── Appliance mode (single host, Docker Compose) ─────────────────────────
 
@@ -27,13 +27,20 @@ ps:
 certs:
 	bash scripts/generate-certs.sh nginx/certs
 
-init:
-	docker compose exec -T postgres psql -U postgres -d logs -f /docker-entrypoint-initdb.d/init.sql
+# I-22: `init` now depends on `up` so users running on a fresh clone
+# don't hit "container is not running". The original `init` ran against
+# an exec'd container that may not exist if `make up` was skipped.
+init: up
+	docker compose exec -T postgres psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-logs} -f /docker-entrypoint-initdb.d/init.sql
 
-# Backend unit + integration tests.
+# Backend unit + integration tests. I-Makefile-10: pytest needs to be run
+# with the project root on PYTHONPATH and pytest.ini at the same level —
+# the previous `cd backend && pytest ../tests/ -v` silently broke imports
+# of `from backend...` because it ran with `backend/` as CWD.
 test:
-	cd backend && python -m pytest ../tests/ -v
+	PYTHONPATH=. python -m pytest -c pytest.ini tests/ -v
 
+# I-Makefile-11: ditto for the frontend test target.
 test-frontend:
 	cd frontend && npm test -- --run
 
@@ -49,11 +56,14 @@ shell-backend:
 	docker compose exec backend bash
 
 shell-postgres:
-	docker compose exec postgres psql -U postgres -d logs
+	docker compose exec postgres psql -U $${POSTGRES_USER:-postgres}
 
 # Run the retention cleanup once (spec §10).
+# I-Makefile-11: PYTHONPATH=/app + scripts/__init__.py so the module is
+# importable inside the backend container. The bare `python -m scripts.retention`
+# from the previous version failed with `No module named scripts.retention`.
 retention:
-	docker compose exec backend python -m scripts.retention
+	docker compose exec -T backend bash -c "cd /app && PYTHONPATH=/app python -m scripts.retention"
 
 docs:
 	@echo "API docs: http://localhost:8000/docs"
@@ -62,5 +72,8 @@ docs:
 send-syslog:
 	./samples/send_syslog.sh localhost 514
 
+# I-23: run the sample sender inside the backend container so the host
+# doesn't need Python installed. The previous version required
+# `python3` on the developer's machine and a port-forwarded 8000.
 send-sample:
-	python samples/post_logs.py http://localhost:8000/api/v1/ingest
+	docker compose exec -T backend python /app/samples/post_logs.py http://backend:8000/api/v1/ingest

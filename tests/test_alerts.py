@@ -346,12 +346,27 @@ async def test_viewer_only_sees_own_tenant_rules(client, viewer_token):
 
 
 async def test_alert_engine_does_not_cross_trigger(client, admin_token):
-    """Critical #2 — a tenant-scoped rule must not fire on another tenant's logs."""
+    """Critical #2 — a tenant-scoped rule must not fire on another tenant's logs.
+
+    Strengthened (N1): the previous version only asserted that the demoA-scoped
+    rule did not fire on otherB logs. That passed even if a regression merged
+    alerts across tenants under the seeded wildcard (tenant='*') rule, because
+    the test never checked the *total* triggered-alert count for otherB.
+
+    Now we explicitly assert: zero triggered alerts after running the engine
+    on three otherB LogonFailed rows, AND a triggered alert appears for
+    demoA. That pins tenant isolation end-to-end.
+    """
     from datetime import datetime, timedelta, timezone
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from backend.storage.database import (
         async_session, AlertRuleDB, LogEntry, TriggeredAlertDB,
     )
+
+    # Use a fresh src_ip so we don't collide with any prior test that left a
+    # TriggeredAlertDB row pointing at the same group_key. Each test fixture
+    # wipes the table, but a paranoid unique IP keeps this test independent.
+    isolated_ip = "203.0.113.42"
 
     # Create a tenant-scoped rule for tenant="demoA".
     async with async_session() as db:
@@ -365,48 +380,76 @@ async def test_alert_engine_does_not_cross_trigger(client, admin_token):
         await db.refresh(scoped_rule)
         rule_id = scoped_rule.id
 
-        # Ingest 3 failed-login logs under tenant="otherB" — should NOT trigger.
+        # Ingest 3 failed-login logs under tenant="otherB" — should NOT trigger
+        # any alert, scoped or wildcard.
         now = datetime.now(timezone.utc)
+        otherb_logs = []
         for i in range(3):
-            db.add(LogEntry(
+            entry = LogEntry(
                 tenant="otherB",
                 source="ad",
                 event_type="LogonFailed",
                 severity=7,
-                src_ip="9.9.9.9",
+                src_ip=isolated_ip,
                 timestamp=now - timedelta(seconds=i),
                 raw={},
-            ))
+            )
+            db.add(entry)
+            otherb_logs.append(entry)
         await db.commit()
+        for entry in otherb_logs:
+            await db.refresh(entry)
 
-        # Manually drive the alert engine for one of those logs.
+        # Drive the engine for each otherB log.
         from backend.services.alert_engine import AlertEngine
-        result = await db.execute(
-            select(LogEntry).where(LogEntry.tenant == "otherB").order_by(LogEntry.id.desc())
-        )
-        log = result.scalars().first()
         engine = AlertEngine(db)
-        triggered = await engine.check_brute_force(log)
-        assert triggered is None, (
-            f"Scoped rule for demoA must not fire on otherB logs, got: {triggered}"
+        for entry in otherb_logs:
+            triggered = await engine.check_brute_force(entry)
+            assert triggered is None, (
+                f"Scoped rule for demoA must not fire on otherB logs, got: {triggered}"
+            )
+
+        # Stronger (N1): assert the table is empty for this src_ip / tenant
+        # pair. If a regression merged alerts across tenants (e.g. dropped the
+        # tenant prefix from group_key), this catches it.
+        rows = (await db.execute(
+            select(func.count(TriggeredAlertDB.id)).where(
+                TriggeredAlertDB.src_ip == isolated_ip,
+                TriggeredAlertDB.tenant == "otherB",
+            )
+        )).scalar_one()
+        assert rows == 0, (
+            f"otherB must produce zero triggered alerts, got {rows} rows"
         )
 
-        # Now ingest 3 failed-login logs under tenant="demoA" — SHOULD trigger.
+        # Now ingest 3 failed-login logs under tenant="demoA" — SHOULD trigger
+        # the scoped rule (and only the scoped rule).
+        demoa_logs = []
         for i in range(3):
-            db.add(LogEntry(
+            entry = LogEntry(
                 tenant="demoA",
                 source="ad",
                 event_type="LogonFailed",
                 severity=7,
-                src_ip="9.9.9.9",
+                src_ip=isolated_ip,
                 timestamp=now - timedelta(seconds=i),
                 raw={},
-            ))
+            )
+            db.add(entry)
+            demoa_logs.append(entry)
         await db.commit()
-        result = await db.execute(
-            select(LogEntry).where(LogEntry.tenant == "demoA").order_by(LogEntry.id.desc())
+        for entry in demoa_logs:
+            await db.refresh(entry)
+
+        last_triggered = None
+        for entry in demoa_logs:
+            last_triggered = await engine.check_brute_force(entry)
+        assert last_triggered is not None, (
+            "Rule scoped to demoA must trigger on demoA logs after threshold"
         )
-        log = result.scalars().first()
-        triggered = await engine.check_brute_force(log)
-        assert triggered is not None, "Rule scoped to demoA must trigger on demoA logs"
-        assert triggered.rule_id == rule_id
+        assert last_triggered.rule_id == rule_id
+        # And it must be tenant-scoped to demoA — a regression that dropped the
+        # tenant filter would set tenant="otherB" via _make_group_key.
+        assert last_triggered.tenant == "demoA", (
+            f"triggered alert must be tenant='demoA', got: {last_triggered.tenant}"
+        )

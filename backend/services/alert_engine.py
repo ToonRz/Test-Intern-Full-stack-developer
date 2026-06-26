@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import asyncio
+import ipaddress
 import logging
-from sqlalchemy import select, and_, or_, func, String
+import socket
+from urllib.parse import urlparse
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.storage.database import AlertRuleDB, TriggeredAlertDB, LogEntry
 from backend.models.schemas import AlertRule, TriggeredAlert
@@ -30,8 +33,59 @@ def _calculate_severity(log_severity: int) -> str:
     return "low"
 
 
-def _make_group_key(src_ip: str, rule_name: str) -> str:
-    return f"{src_ip}:{rule_name}"
+def _make_group_key(tenant: str, src_ip: str, rule_name: str) -> str:
+    """Build the alert-group key.
+
+    Critical B-C8: include `tenant` in the key. Without it, the same src_ip
+    triggering brute-force across two tenants (e.g., a multi-tenant cloud
+    load balancer) would merge into a single triggered-alert row and notify
+    the wrong operator.
+    """
+    return f"{tenant or 'default'}:{src_ip}:{rule_name}"
+
+
+def _safe_webhook_target(url: Optional[str]) -> Optional[str]:
+    """Return the webhook URL only if its resolved IP is public.
+
+    Critical B-C10: an attacker who can set `webhook_url` (e.g., via a
+    compromised admin session) could otherwise target `http://169.254.169.254/`
+    (cloud metadata), `http://10.0.0.1/admin` (internal admin panels), or
+    `http://localhost:6379/` (Redis). Reject any private/loopback/link-local/
+    multicast IP, and any non-http(s) scheme.
+    """
+    if not url:
+        return None
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https"):
+        return None
+    if not p.hostname:
+        return None
+    try:
+        infos = socket.getaddrinfo(p.hostname, None)
+    except socket.gaierror:
+        return None
+    for fam, *_rest, sockaddr in infos:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return None
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            logger.warning(
+                "Webhook URL %s resolves to disallowed IP %s — SSRF guard rejected",
+                url, ip,
+            )
+            return None
+    return url
 
 
 class AlertEngine:
@@ -64,17 +118,21 @@ class AlertEngine:
         # with_for_update() serialises concurrent transactions working on the
         # same rule — on Postgres this acquires a row lock; on SQLite the
         # engine is single-writer so the call is a no-op.
+        #
+        # Critical B-C9: do *not* cast JSON to String and `.contains(...)` —
+        # that's a substring search (e.g. "LogonFailed" matches the unrelated
+        # "LogonFailedExtra"). Pull candidate rules by the cheap
+        # tenant+enabled filter and check membership in Python.
         result = await self.db.execute(
             select(AlertRuleDB).where(
                 AlertRuleDB.enabled == True,
-                AlertRuleDB.event_types.cast(String).contains(log.event_type),
                 or_(
                     AlertRuleDB.tenant == "*",
                     AlertRuleDB.tenant == log.tenant,
                 ),
             ).with_for_update()
         )
-        rules = result.scalars().all()
+        rules = [r for r in result.scalars().all() if log.event_type in (r.event_types or [])]
         if not rules:
             return None
 
@@ -83,7 +141,7 @@ class AlertEngine:
 
         for rule in rules:
             window_start = now - timedelta(minutes=rule.window_minutes)
-            group_key = _make_group_key(log.src_ip, rule.name)
+            group_key = _make_group_key(log.tenant, log.src_ip, rule.name)
 
             # Count how many failed-login logs from this src_ip happened
             # within the rule's window. Including the current log row.
@@ -180,10 +238,20 @@ class AlertEngine:
         # detached and a naive `triggered.webhook_sent = True` would have no
         # effect on the database.
         from backend.storage.database import async_session
+        # Critical B-C10: SSRF guard. Reject webhooks that resolve to private
+        # network addresses (cloud metadata, internal admin panels, Redis on
+        # localhost, etc.) before opening a socket.
+        safe_url = _safe_webhook_target(rule.webhook_url)
+        if not safe_url:
+            logger.warning(
+                "Webhook URL for rule %s rejected by SSRF guard (url=%s)",
+                rule.id, rule.webhook_url,
+            )
+            return
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    rule.webhook_url,
+                    safe_url,
                     json={
                         "alert": "Brute Force Login Detected",
                         "rule_name": rule.name,
@@ -337,14 +405,19 @@ class AlertEngine:
     async def get_triggered_alerts(
         self,
         limit: int = 100,
+        offset: int = 0,
         tenant: Optional[str] = None,
         severity: Optional[str] = None,
         source: Optional[str] = None,
         acknowledged: Optional[bool] = None,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
-    ) -> List[TriggeredAlertDB]:
+    ) -> tuple[List[TriggeredAlertDB], int]:
+        """Return (page, total). Pagination added so the UI can show
+        page 2/3/... without downloading every triggered alert at once."""
+        from sqlalchemy import func
         query = select(TriggeredAlertDB)
+        count_query = select(func.count(TriggeredAlertDB.id))
         conditions = []
         if tenant:
             conditions.append(TriggeredAlertDB.tenant == tenant)
@@ -360,9 +433,11 @@ class AlertEngine:
             conditions.append(TriggeredAlertDB.last_seen <= end_time)
         if conditions:
             query = query.where(and_(*conditions))
-        query = query.order_by(TriggeredAlertDB.last_seen.desc()).limit(limit)
+            count_query = count_query.where(and_(*conditions))
+        total = (await self.db.execute(count_query)).scalar_one()
+        query = query.order_by(TriggeredAlertDB.last_seen.desc()).offset(offset).limit(limit)
         result = await self.db.execute(query)
-        return list(result.scalars().all())
+        return list(result.scalars().all()), int(total or 0)
 
     async def get_alert_logs(self, alert_id: int) -> List[LogEntry]:
         result = await self.db.execute(

@@ -60,6 +60,14 @@ async def _clean_tables(_bootstrap_db):
     # bleed across tests (test_login_rate_limit fills it on purpose).
     from backend.rate_limit import limiter
     limiter.reset()
+    # Reset the RedisCache singleton too — pytest-asyncio gives each test a
+    # fresh event loop, but RedisCache._instance is a module-level attribute
+    # whose underlying connection pool is bound to the loop that first called
+    # EnrichmentService.enrich. Without this reset, a later test that calls
+    # enrich() hits "RuntimeError: Event loop is closed" inside the cached
+    # Redis client's parser. Mirrors the engine.dispose() pattern below.
+    from backend.services.enrichment import RedisCache as _RedisCache
+    _RedisCache._instance = None
     async with engine.begin() as conn:
         # Use DELETE (not TRUNCATE) so autoincrement counters persist and so
         # we work on SQLite in addition to Postgres.
@@ -77,6 +85,11 @@ async def _clean_tables(_bootstrap_db):
     # cached connection errors with "attached to a different loop". Disposing
     # forces the pool to reconnect against the new loop on first use.
     await engine.dispose()
+    # Drop the RedisCache reference again on the way out — the current loop
+    # is about to close, so any cached connection is unusable in the next
+    # test anyway. Resetting here is belt-and-suspenders with the entry-time
+    # reset above, but cheap.
+    _RedisCache._instance = None
 
 
 @pytest_asyncio.fixture

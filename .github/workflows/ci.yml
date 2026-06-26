@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, develop]
 
+# I-33: scope GITHUB_TOKEN to the minimum needed so a compromised
+# workflow step can't write to packages / deployments. The deploy jobs
+# override this with `packages: write` (GHCR push).
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_BACKEND: ghcr.io/${{ github.repository }}/backend
@@ -108,7 +114,12 @@ jobs:
       - name: Run Bandit security check (Python)
         run: |
           echo "::group::Bandit output"
-          bandit -r backend -lll --skip B101  # B101 = assert (test files), -lll = low+above
+          # I-CI-34: the previous comment claimed `-lll = low+above` but
+          # Bandit's actual semantics are `-l` (low), `-ll` (medium),
+          # `-lll` (high only). Use `-lll` to gate merges on HIGH-severity
+          # findings; LOW/MEDIUM still surface in the report but don't
+          # block the build.
+          bandit -r backend -lll --skip B101
           echo "::endgroup::"
 
   # ── Build & Push Docker Images ─────────────────────────────────────────
@@ -246,8 +257,12 @@ jobs:
         env:
           NAMESPACE: log-management-staging
         run: |
+          # I-C6: selector must match the Helm chart's actual pod labels
+          # (`app.kubernetes.io/name=backend`). The previous `app=backend-backend`
+          # never matched real pods, so the smoke test silently passed and
+          # broken deploys were green-lit.
           kubectl wait --for=condition=ready pod \
-            -l app=backend-backend \
+            -l app.kubernetes.io/name=backend \
             -n "$NAMESPACE" \
             --timeout=5m
 
@@ -332,6 +347,6 @@ jobs:
           NAMESPACE: log-management
         run: |
           kubectl wait --for=condition=ready pod \
-            -l app=backend-backend \
+            -l app.kubernetes.io/name=backend \
             -n "$NAMESPACE" \
             --timeout=5m

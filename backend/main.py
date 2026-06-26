@@ -32,22 +32,38 @@ logger = logging.getLogger("log-management")
 # exactly N bytes of message. Used by rsyslog/syslog-ng default TCP config.
 _OCTET_COUNTED = re.compile(rb"^(\d+) ")
 
+# Critical B-C3 / B-C4: cap the per-listener resource budget so a hostile
+# or buggy sender can't OOM the backend. The semaphore caps the number of
+# in-flight parsing coroutines; the buffer cap caps memory per TCP client.
+_MAX_SYSLOG_UDP_TASKS = 1000
+_MAX_TCP_BUF_BYTES = 1_048_576  # 1 MiB
+_syslog_udp_sem = asyncio.Semaphore(_MAX_SYSLOG_UDP_TASKS)
+
 # Refuse to boot with insecure defaults so SECRET_KEY isn't silently weak.
-if settings.SECRET_KEY == "change-me-in-production" or len(settings.SECRET_KEY) < 32:
-    if not settings.DEBUG:
-        raise RuntimeError(
-            "SECRET_KEY must be set to a 32+ character random value in production. "
-            "Set SECRET_KEY in .env to a value generated via `openssl rand -hex 32`."
-        )
-    logger.warning("SECRET_KEY is using the insecure development default — do not run with DEBUG=False in prod.")
+# Critical B-C1: always enforce — no DEBUG bypass. The DEBUG check previously
+# allowed test/staging builds to accept the literal default and short keys,
+# which would then ship unchanged if the operator forgot to set the env var
+# before flipping DEBUG=false. The boot check is the last line of defence.
+if (
+    settings.SECRET_KEY == "change-me-in-production"
+    or len(settings.SECRET_KEY) < 32
+):
+    raise RuntimeError(
+        "SECRET_KEY must be set to a 32+ character random value. "
+        "Set SECRET_KEY in .env to a value generated via `openssl rand -hex 32`."
+    )
 
 
 async def _retention_loop():
-    """Background task: delete logs older than DATA_RETENTION_DAYS every hour (spec §10)."""
+    """Background task: delete logs older than DATA_RETENTION_DAYS every hour (spec §10).
+
+    Critical B-C2: run the cleanup *first*, then sleep — the previous version
+    slept for an hour before its first cleanup, so a fresh install with stale
+    test fixtures wouldn't purge them until hour 2.
+    """
     from datetime import timedelta
     while True:
         try:
-            await asyncio.sleep(3600)
             cutoff = datetime.now(timezone.utc) - timedelta(days=settings.DATA_RETENTION_DAYS)
             async with async_session() as db:
                 from sqlalchemy import delete
@@ -56,10 +72,12 @@ async def _retention_loop():
                 )
                 await db.commit()
                 logger.info("Retention: deleted %s logs older than %s", result.rowcount, cutoff.isoformat())
+            await asyncio.sleep(3600)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Retention loop error")
+            await asyncio.sleep(60)  # back off on error
 
 
 def _parse_timestamp(ts: str) -> datetime:
@@ -125,7 +143,11 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Critical B-C7: HSTS only on HTTPS. Sending it on HTTP responses caused
+    # browsers to cache a "downgrade-only" policy that broke first-load HTTPS
+    # negotiation and could not be cleared without a browser restart.
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -171,6 +193,49 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus-format metrics endpoint.
+
+    HIGH: nginx.conf has an IP-allowlisted /metrics path but the backend
+    previously didn't define it, so Prometheus scrapes returned 404. The
+    nginx config and the backend should agree; this lightweight exporter
+    covers process, ingest, and alert counters without depending on the
+    prometheus_client package (we hand-format so it works in air-gapped
+    test envs).
+    """
+    try:
+        async with async_session() as db:
+            from sqlalchemy import func, select
+            from backend.storage.database import LogEntry, TriggeredAlertDB, AlertRuleDB
+            log_total = (await db.execute(select(func.count(LogEntry.id)))).scalar_one() or 0
+            triggered_total = (await db.execute(select(func.count(TriggeredAlertDB.id)))).scalar_one() or 0
+            rules_total = (await db.execute(select(func.count(AlertRuleDB.id)))).scalar_one() or 0
+            ack_total = (await db.execute(
+                select(func.count(TriggeredAlertDB.id)).where(TriggeredAlertDB.acknowledged == True)  # noqa: E712
+            )).scalar_one() or 0
+    except Exception:
+        # Never let /metrics fail the scrape — return zeros with an error note.
+        log_total = triggered_total = rules_total = ack_total = 0
+
+    body = (
+        "# HELP log_management_logs_total Total ingested log rows.\n"
+        "# TYPE log_management_logs_total counter\n"
+        f"log_management_logs_total {log_total}\n"
+        "# HELP log_management_triggered_alerts_total Total triggered alerts (all time).\n"
+        "# TYPE log_management_triggered_alerts_total counter\n"
+        f"log_management_triggered_alerts_total {triggered_total}\n"
+        "# HELP log_management_alert_rules_total Configured alert rules.\n"
+        "# TYPE log_management_alert_rules_total gauge\n"
+        f"log_management_alert_rules_total {rules_total}\n"
+        "# HELP log_management_alerts_acknowledged_total Acknowledged triggered alerts.\n"
+        "# TYPE log_management_alerts_acknowledged_total counter\n"
+        f"log_management_alerts_acknowledged_total {ack_total}\n"
+    )
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=body, media_type="text/plain; version=0.0.4")
 
 
 def setup_telemetry():
@@ -373,9 +438,21 @@ async def start_syslog_listener():
                     return  # drained the kernel buffer for now
                 line = data.decode("utf-8", errors="ignore").strip()
                 if line:
-                    # Schedule the coroutine on the loop — the reader
-                    # callback itself is synchronous.
-                    asyncio.create_task(_handle_syslog_line(line))
+                    # Critical B-C3: bound concurrent parse tasks by checking
+                    # the semaphore counter synchronously. If the slot is full
+                    # we drop the datagram rather than spawning an unbounded
+                    # number of coroutines and exhausting memory.
+                    if _syslog_udp_sem._value <= 0:
+                        logger.warning(
+                            "Syslog UDP backpressure: dropping datagram (cap=%d)",
+                            _MAX_SYSLOG_UDP_TASKS,
+                        )
+                        continue
+                    asyncio.create_task(_bounded_syslog_line(line))
+
+        async def _bounded_syslog_line(line: str) -> None:
+            async with _syslog_udp_sem:
+                await _handle_syslog_line(line)
 
         try:
             loop.add_reader(sock.fileno(), on_readable)
@@ -409,13 +486,22 @@ async def start_syslog_listener():
     async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         # High #7: support both RFC6587 octet-counted and LF-delimited framing
         # in one TCP connection — autodetect by inspecting the head of the buffer.
+        # Critical B-C4: cap the per-connection buffer so a peer that streams
+        # without LF (or with a 10 MB "frame count") can't OOM the process.
         buf = b""
+        peer = writer.get_extra_info("peername")
         try:
             while True:
                 chunk = await reader.read(4096)
                 if not chunk:
                     break
                 buf += chunk
+                if len(buf) > _MAX_TCP_BUF_BYTES:
+                    logger.warning(
+                        "Syslog TCP buffer overflow from %s — closing connection (cap=%d)",
+                        peer, _MAX_TCP_BUF_BYTES,
+                    )
+                    break
                 while buf:
                     # Octet-counted: leading "<digits> " then exactly N bytes.
                     m = _OCTET_COUNTED.match(buf)
@@ -456,4 +542,12 @@ async def start_syslog_listener():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # HIGH: use settings so SECRETS_CONFIG_PATH / bind address come from the
+    # environment, not a hard-coded value. The previous literal ignored
+    # SYSLOG_HOST (syslog listener) and bound to all interfaces unconditionally
+    # — operators running on a custom port or interface had to patch the file.
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+    )

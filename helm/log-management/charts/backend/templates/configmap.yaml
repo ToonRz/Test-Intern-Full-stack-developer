@@ -4,10 +4,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Chart.Name }}-backend-config
+  name: {{ include "backend.fullname" . }}-config
   namespace: {{ .Values.namespace | default "log-management" }}
   labels:
-    app: {{ .Chart.Name }}-backend
+    app: backend
 data:
   APP_NAME: {{ .Values.env.APP_NAME | quote }}
   DEBUG: {{ .Values.env.DEBUG | quote }}

@@ -32,20 +32,25 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: {{ .Chart.Name }}-backend
+                # I-15: compute the subchart's rendered Service name from the
+                # parent's release name. The subchart's `_helpers.tpl` produces
+                # `<Release.Name>-<subchart-name>` (e.g. `log-management-backend`)
+                # when no `fullnameOverride` is set. Computing the same string
+                # here keeps the Ingress in lock-step with the subchart.
+                name: {{ .Values.backend.fullnameOverride | default (printf "%s-backend" .Release.Name) }}
                 port:
                   number: {{ .Values.backend.service.port }}
           - path: /docs(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: {{ .Chart.Name }}-backend
+                name: {{ .Values.backend.fullnameOverride | default (printf "%s-backend" .Release.Name) }}
                 port:
                   number: {{ .Values.backend.service.port }}
           - path: /(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: {{ .Chart.Name }}-frontend
+                name: {{ .Values.frontend.fullnameOverride | default (printf "%s-frontend" .Release.Name) }}
                 port:
                   number: {{ .Values.frontend.service.port }}

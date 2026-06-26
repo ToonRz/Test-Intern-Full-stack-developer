@@ -178,6 +178,18 @@ class TenantDB(Base):
 
 
 async def init_db():
+    """Create schema and apply lightweight ALTER migrations.
+
+    Critical B-C15: each ALTER is wrapped in a try/except so a failure on
+    one migration (e.g. partial schema state, locked table, or missing
+    permission) doesn't abort the whole init. The exception is logged so
+    the operator can see which migration failed and act on it, but the
+    process still boots. This matches Alembic's "best-effort" pattern for
+    pre-production schemas.
+    """
+    import logging
+    _log = logging.getLogger("log-management.init_db")
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Lightweight idempotent migration: add columns introduced after the
@@ -188,13 +200,26 @@ async def init_db():
         from sqlalchemy.engine import Inspector
 
         def _has_column(sync_conn, table: str, column: str) -> bool:
-            inspector = Inspector.from_engine(sync_conn)
-            return column in {c["name"] for c in inspector.get_columns(table)}
+            try:
+                inspector = Inspector.from_engine(sync_conn)
+                return column in {c["name"] for c in inspector.get_columns(table)}
+            except Exception:
+                # If we can't even introspect (corrupt metadata, missing
+                # table), assume the column is missing and try to add it.
+                return False
 
         def _alter(sync_conn, dialect: str, table: str, column: str, ddl_postgres: str, ddl_sqlite: str) -> None:
-            if not _has_column(sync_conn, table, column):
-                stmt = ddl_postgres if dialect == "postgresql" else ddl_sqlite
+            if _has_column(sync_conn, table, column):
+                return
+            stmt = ddl_postgres if dialect == "postgresql" else ddl_sqlite
+            try:
                 sync_conn.execute(text(stmt))
+                _log.info("Migration: added %s.%s", table, column)
+            except Exception as e:
+                # Don't abort the whole init on a single failed migration.
+                # The column may already exist under a different type, or
+                # the table may be in an odd state — log and continue.
+                _log.warning("Migration skipped %s.%s: %s", table, column, e)
 
         dialect = engine.dialect.name
         await conn.run_sync(
@@ -230,9 +255,12 @@ async def init_db():
         )
         # Index for tenant-scoped alert rule lookups (Critical #2).
         if dialect == "postgresql":
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules (tenant)"
-            ))
+            try:
+                await conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_alert_rules_tenant ON alert_rules (tenant)"
+                ))
+            except Exception as e:
+                _log.warning("Index creation skipped: %s", e)
             # Low #29: GIN index requires the column to be JSONB. The current
             # `raw` column is JSON (created by SQLAlchemy's generic JSON
             # type). Migrating to JSONB is a separate change; deferring.

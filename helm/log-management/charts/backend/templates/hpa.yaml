@@ -5,15 +5,15 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ .Chart.Name }}-backend
+  name: {{ include "backend.fullname" . }}
   namespace: {{ .Values.namespace | default "log-management" }}
   labels:
-    app: {{ .Chart.Name }}-backend
+    app: backend
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ .Chart.Name }}-backend
+    name: {{ include "backend.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
   metrics:

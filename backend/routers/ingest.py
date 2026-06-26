@@ -10,9 +10,15 @@ from backend.models.schemas import LogIngest, NormalizedLog
 from backend.normalizer.core import normalize_log
 from backend.services.alert_engine import AlertEngine
 from backend.services.enrichment import EnrichmentService
+from backend.rate_limit import limiter
 
 router = APIRouter(prefix="/ingest", tags=["Ingest"])
 logger = logging.getLogger("log-management.ingest")
+
+# Critical B-C5: cap the request body to defend against memory-exhaustion
+# via a 1 GB JSON blob. 16 MiB comfortably accommodates a batch of tens of
+# thousands of compact log lines but won't OOM the process.
+_MAX_INGEST_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB
 
 
 def _parse_timestamp(ts: Optional[str]) -> datetime:
@@ -94,20 +100,38 @@ async def enrich_and_save(db: AsyncSession, log: NormalizedLog) -> LogEntry:
             # save_log() call shares this session and would otherwise hit
             # PendingRollbackError on commit. Rollback to clear the failed
             # transaction state, then save the log without enrichment data.
+            #
+            # HIGH: do NOT mutate `RedisCache._instance` from this module.
+            # That class-level singleton is owned by the enrichment module —
+            # cross-module mutation is a hidden side effect that confuses
+            # readers and races with concurrent coroutines. The enrichment
+            # module now handles its own cache reset on connection failure
+            # (see EnrichmentService.enrich).
             logger.exception("Enrichment failed for src_ip=%s", log.src_ip)
             await db.rollback()
-            from backend.services.enrichment import RedisCache
-            RedisCache._instance = None
     return await save_log(db, log, enrichment)
 
 
 @router.post("")
+@limiter.limit("120/minute")
 async def ingest_log(
     request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """POST /ingest — receive JSON log (single object or batch array) per spec §5.1."""
+    """POST /ingest — receive JSON log (single object or batch array) per spec §5.1.
+
+    Critical B-C5: rate-limited to 120 req/min/IP and capped at 16 MiB body
+    so a single client can't OOM the process or starve other ingesters. The
+    body-size check happens before `await request.json()` so a 1 GB blob is
+    rejected as soon as Content-Length is read, without buffering into memory.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _MAX_INGEST_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Request body too large (>{_MAX_INGEST_BODY_BYTES} bytes)",
+        )
     body = await request.json()
     logs = body if isinstance(body, list) else [body]
 
@@ -145,12 +169,25 @@ async def check_alerts(log_id: int):
 
 
 @router.post("/batch")
+@limiter.limit("60/minute")
 async def ingest_batch(
     request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """POST /ingest/batch — upload JSON batch (AWS, M365, AD) per spec §5.1."""
+    """POST /ingest/batch — upload JSON batch (AWS, M365, AD) per spec §5.1.
+
+    Critical B-C5: same body-size cap and rate limit as /ingest. The
+    batch endpoint historically was the worst offender for accidental
+    multi-hundred-MB uploads because upstream tooling serialises the whole
+    daily export into one request.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _MAX_INGEST_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Request body too large (>{_MAX_INGEST_BODY_BYTES} bytes)",
+        )
     body = await request.json()
     files = body.get("files", [])
     source = body.get("source", "api")

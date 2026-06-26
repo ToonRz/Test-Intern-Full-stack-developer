@@ -6,15 +6,10 @@ import {
 import { Activity, AlertTriangle, Clock, Shield, TrendingUp, Globe, Zap, Filter } from 'lucide-react'
 import clsx from 'clsx'
 import { logs, alerts } from '../services/api'
-
-// Severity → CSS class bucket used by every page (severity is integer 0-10).
-export function severityBucket(sev) {
-  if (sev == null) return 'low'
-  if (sev >= 9) return 'critical'
-  if (sev >= 7) return 'high'
-  if (sev >= 4) return 'medium'
-  return 'low'
-}
+// F-C3: use the shared severity helper so Dashboard and AlertTriggered
+// agree on bucket+color semantics (the previous copy-pasted helper
+// compared strings to numbers and always returned the "low" color).
+export { severityBucket, severityColor } from '../utils/severity'
 
 const SOURCE_COLORS = {
   firewall: '#cc785c',
@@ -93,18 +88,21 @@ function Dashboard() {
     load()
   }, [load])
 
-  // severityBucket maps 9-10 to "critical" — mirror it here so the card
-  // count matches the bucket the filter UI exposes (spec §3: severity 0-10,
-  // critical = 9-10). Using >= 8 silently mixed in "high" (8).
-  const criticalCount = stats.by_severity
+  // F-50: nullish-coalesce on each stat card so a backend response that's
+  // missing `total`, `by_source`, or `by_severity` (or returns a count of
+  // null) doesn't throw a TypeError on .toLocaleString() / .length.
+  const totalLogs = (stats.total ?? 0).toLocaleString()
+  const criticalCount = (stats.by_severity ?? [])
     .filter((s) => parseInt(s.key, 10) >= 9)
-    .reduce((sum, s) => sum + s.count, 0)
+    .reduce((sum, s) => sum + (s.count ?? 0), 0)
+  const sourcesCount = ((stats.by_source ?? []).length).toLocaleString()
+  const alertsDisplay = (alertsCount ?? 0).toLocaleString()
 
   const statCards = [
-    { label: 'Total Logs', value: stats.total.toLocaleString(), icon: Activity, accent: 'var(--color-primary)' },
+    { label: 'Total Logs', value: totalLogs, icon: Activity, accent: 'var(--color-primary)' },
     { label: 'Critical', value: criticalCount.toLocaleString(), icon: AlertTriangle, accent: 'var(--color-error)' },
-    { label: 'Sources', value: stats.by_source.length.toLocaleString(), icon: Globe, accent: 'var(--color-accent-teal)' },
-    { label: 'Alerts', value: alertsCount.toLocaleString(), icon: Shield, accent: 'var(--color-accent-amber)' },
+    { label: 'Sources', value: sourcesCount, icon: Globe, accent: 'var(--color-accent-teal)' },
+    { label: 'Alerts', value: alertsDisplay, icon: Shield, accent: 'var(--color-accent-amber)' },
   ]
 
   return (

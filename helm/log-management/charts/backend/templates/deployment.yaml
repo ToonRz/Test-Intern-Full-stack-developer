@@ -1,24 +1,38 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Chart.Name }}-backend
+  # I-15: use the fullname helper so the rendered name matches the parent
+  # chart's release (e.g. `log-management-backend`). The previous
+  # `{{ .Chart.Name }}-backend` resolved to `backend-backend` inside the
+  # subchart, which the parent Ingress never referenced.
+  name: {{ include "backend.fullname" . }}
   namespace: {{ .Values.namespace | default "log-management" }}
   labels:
-    app: {{ .Chart.Name }}-backend
+    # I-14: hardcode `app: backend` instead of `{{ .Chart.Name }}-backend`.
+    # Inside a subchart, `.Chart.Name` is the subchart's name (`backend`),
+    # not the parent's (`log-management`), so the previous template resolved
+    # to `app: backend-backend` and didn't match the parent chart's
+    # ingress/Service selectors. The CI smoke test (`app=backend-backend`)
+    # had the same problem.
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: log-management
     version: {{ .Values.image.tag | default "latest" }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: {{ .Chart.Name }}-backend
+      app: backend
   template:
     metadata:
       labels:
-        app: {{ .Chart.Name }}-backend
+        app: backend
+        app.kubernetes.io/name: backend
       annotations:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
     spec:
-      serviceAccountName: {{ .Chart.Name }}-backend
+      serviceAccountName: {{ include "backend.fullname" . }}
       {{- if or .Values.imagePullSecretName .Values.global.imagePullSecretName }}
       imagePullSecrets:
         - name: {{ .Values.imagePullSecretName | default .Values.global.imagePullSecretName }}
@@ -31,16 +45,26 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
+            # I-27: expose the syslog UDP/TCP ports so the cluster LB can
+            # terminate and forward to the backend. The previous chart
+            # only declared the HTTP port, so production deployments
+            # could not accept syslog at all.
+            - name: syslog-udp
+              containerPort: 514
+              protocol: UDP
+            - name: syslog-tcp
+              containerPort: 514
+              protocol: TCP
           envFrom:
             # Non-secret config — plain strings in the ConfigMap.
             - configMapRef:
-                name: {{ .Chart.Name }}-backend-config
+                name: {{ include "backend.fullname" . }}-config
             # Sensitive (SECRET_KEY, DATABASE_URL) — operators MUST set
             # these via --set or ExternalSecret. backend/main.py refuses
             # to boot with a weak SECRET_KEY, so an unset secret is
             # detected at startup, not silently at first request.
             - secretRef:
-                name: {{ .Chart.Name }}-backend-secret
+                name: {{ include "backend.fullname" . }}-secret
           livenessProbe:
             httpGet:
               path: /health
@@ -59,7 +83,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Chart.Name }}-backend
+  name: {{ include "backend.fullname" . }}
   namespace: {{ .Values.namespace | default "log-management" }}
 spec:
   type: {{ .Values.service.type }}
@@ -68,5 +92,18 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    # I-16: dedicated headless-style service for syslog so the cluster LB
+    # can target UDP/TCP/514 directly. The previous chart tried to share
+    # port 514 with the same Service that backed HTTP, but
+    # ingress-nginx.tcp.services.syslog.targetPort referenced a non-existent
+    # `1514` port.
+    - name: syslog-udp
+      port: 514
+      targetPort: syslog-udp
+      protocol: UDP
+    - name: syslog-tcp
+      port: 514
+      targetPort: syslog-tcp
+      protocol: TCP
   selector:
-    app: {{ .Chart.Name }}-backend
+    app: backend

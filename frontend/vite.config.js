@@ -11,7 +11,10 @@ export default defineConfig({
     port: 3000,
     host: true,
     proxy: {
-      '/api': {
+      // F-C1: key must match the axios baseURL (`/api/v1`). The previous
+      // `/api` key proxied only `/api/...` but axios sent `/api/v1/...`,
+      // so every dev request 404'd unless VITE_API_URL was set explicitly.
+      '/api/v1': {
         target: devProxyTarget,
         changeOrigin: true,
       },

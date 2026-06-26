@@ -46,12 +46,21 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const status = error.response?.status
+    const url = error.config?.url || ""
     if (status === 401) {
-      // Low #26: signal an auth-logout event instead of doing a hard reload.
-      // The AuthEvents bridge inside <BrowserRouter> (App.jsx) catches this
-      // and calls react-router's navigate(), so we keep client state and
-      // avoid the visible "flash to white" of `window.location.href`.
-      window.dispatchEvent(new CustomEvent('auth:logout'))
+      // F-14: skip the auth:logout dispatch when the failing request is the
+      // /auth/me probe that App.jsx fires on every mount. The probe *expects*
+      // a 401 when the user has no session — dispatching auth:logout there
+      // causes a brief blank flash before the catch handler in App.jsx
+      // resolves session=false.
+      const isAuthProbe = url.endsWith("/auth/me") || url.includes("/auth/me?")
+      if (!isAuthProbe) {
+        // Low #26: signal an auth-logout event instead of doing a hard reload.
+        // The AuthEvents bridge inside <BrowserRouter> (App.jsx) catches this
+        // and calls react-router's navigate(), so we keep client state and
+        // avoid the visible "flash to white" of `window.location.href`.
+        window.dispatchEvent(new CustomEvent('auth:logout'))
+      }
     }
     return Promise.reject(error)
   },

@@ -1,6 +1,21 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Any, Literal
+from enum import Enum
 from datetime import datetime
+
+
+class SeverityBucket(str, Enum):
+    """Canonical severity buckets for the dashboard / alert group cards.
+
+    HIGH: Pydantic v2 will reject any string that isn't in this enum when
+    the field is typed `SeverityBucket`. The previous free-form `str`
+    silently accepted garbage like `"rocketfuel"` and dropped the value
+    client-side.
+    """
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
 
 
 class Cloud(BaseModel):

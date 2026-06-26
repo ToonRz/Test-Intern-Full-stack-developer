@@ -94,7 +94,16 @@ async def test_redis_failure_continues_batch(client, monkeypatch):
 
 
 async def test_redis_cache_resets_after_failure(client, monkeypatch):
-    """After enrichment failure, RedisCache singleton is reset so next call retries cleanly."""
+    """After enrichment failure, RedisCache singleton is reset so next call retries cleanly.
+
+    HIGH: this used to be a cross-module side effect — `ingest.py` reset
+    `RedisCache._instance` directly. That was removed because the cross-
+    module mutation is a hidden contract that races with concurrent
+    coroutines. The reset is now the EnrichmentService's own responsibility:
+    if the next call hits the same broken stub, the service itself should
+    detect the failure and reset. This test pins that the ingest path no
+    longer mutates the singleton from outside the enrichment module.
+    """
     from backend.routers import ingest as ingest_module
     from backend.services.enrichment import RedisCache
 
@@ -110,4 +119,10 @@ async def test_redis_cache_resets_after_failure(client, monkeypatch):
         json=[{"tenant": "test", "source": "api", "event_type": "e", "ip": "8.8.8.8"}],
     )
     assert response.status_code == 200
-    assert RedisCache._instance is None, "Broken cache instance must be reset on failure"
+    # Ingest no longer mutates the singleton — that's the enrichment
+    # module's own job (via RedisCache.get's exception handler). The stub
+    # should still be intact so the test doesn't pretend otherwise.
+    assert RedisCache._instance == "broken-stub", (
+        "Ingest router must not mutate RedisCache._instance — "
+        "the enrichment module owns that lifecycle"
+    )

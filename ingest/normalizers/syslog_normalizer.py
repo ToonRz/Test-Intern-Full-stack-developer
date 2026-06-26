@@ -1,5 +1,29 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+
+# Critical B-C13: a syslog timestamp like "Aug 20 12:44:56" has no year. The
+# previous code used `datetime.now().year` for both Aug-20 and Dec-31 lines,
+# so a Dec-31 line ingested on Jan 1 would be tagged as the *next* Dec 31,
+# 364 days in the future. Compare against the *current* year and roll back
+# to the previous year if the candidate is more than ~3 days in the future.
+def _parse_syslog_timestamp(ts_str: str, now: datetime) -> datetime:
+    """Parse "Aug 20 12:44:56" into a tz-aware UTC datetime.
+
+    Year-rollover guard: if the candidate timestamp is more than
+    `_YEAR_ROLLOVER_WINDOW` ahead of `now`, assume it's last year. The window
+    is asymmetric on purpose: a 3-day skew absorbs legitimate clock drift
+    without false-negatives on Dec 31 → Jan 1 transitions.
+    """
+    _YEAR_ROLLOVER_WINDOW = timedelta(days=3)
+    try:
+        naive = datetime.strptime(f"{now.year} {ts_str}", "%Y %b %d %H:%M:%S")
+    except ValueError:
+        return now
+    candidate = naive.replace(tzinfo=timezone.utc)
+    if candidate > now + _YEAR_ROLLOVER_WINDOW:
+        candidate = candidate.replace(year=candidate.year - 1)
+    return candidate
 
 
 def parse_syslog(line: str, tenant: str = "default"):
@@ -7,6 +31,7 @@ def parse_syslog(line: str, tenant: str = "default"):
     Parse syslog line per spec.md 4.1 and 4.2.
     Returns normalized dict matching schema.
     """
+    now = datetime.now(timezone.utc)
     # Firewall format: <134>Aug 20 12:44:56 fw01 vendor=demo product=ngfw action=deny...
     firewall_pattern = r'<(?:\d+)>(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(?:vendor=(\S+))?\s*(?:product=(\S+))?\s*(?:action=(\S+))?\s*(?:src=(\S+))?\s*(?:dst=(\S+))?\s*(?:spt=(\d+))?\s*(?:dpt=(\d+))?\s*(?:proto=(\S+))?\s*(?:msg=(\S+))?\s*(?:policy=(\S+))?'
     fw_match = re.match(firewall_pattern, line)
@@ -17,10 +42,7 @@ def parse_syslog(line: str, tenant: str = "default"):
         # Require at least vendor or product before claiming a firewall match —
         # otherwise fall through to the network pattern below.
         timestamp_str, hostname, vendor, product, action, src_ip, dst_ip, spt, dpt, proto, msg, policy = fw_match.groups()
-        try:
-            timestamp = datetime.strptime(f"{datetime.now().year} {timestamp_str}", "%Y %b %d %H:%M:%S")
-        except ValueError:
-            timestamp = datetime.utcnow()
+        timestamp = _parse_syslog_timestamp(timestamp_str, now)
 
         return {
             "tenant": tenant,
@@ -37,7 +59,7 @@ def parse_syslog(line: str, tenant: str = "default"):
             "protocol": proto,
             "host": hostname,
             "rule_name": policy,
-            "@timestamp": timestamp.isoformat() + "Z",
+            "@timestamp": timestamp.isoformat(),
             "raw": {"original": line}
         }
 
@@ -47,10 +69,7 @@ def parse_syslog(line: str, tenant: str = "default"):
 
     if net_match:
         timestamp_str, hostname, interface, event, mac, reason = net_match.groups()
-        try:
-            timestamp = datetime.strptime(f"{datetime.now().year} {timestamp_str}", "%Y %b %d %H:%M:%S")
-        except ValueError:
-            timestamp = datetime.utcnow()
+        timestamp = _parse_syslog_timestamp(timestamp_str, now)
 
         severity = 7 if event and "down" in event.lower() else 5
 
@@ -62,7 +81,7 @@ def parse_syslog(line: str, tenant: str = "default"):
             "severity": severity,
             "host": hostname,
             "action": "alert" if severity >= 7 else None,
-            "@timestamp": timestamp.isoformat() + "Z",
+            "@timestamp": timestamp.isoformat(),
             "raw": {"original": line, "interface": interface, "mac": mac, "reason": reason}
         }
 

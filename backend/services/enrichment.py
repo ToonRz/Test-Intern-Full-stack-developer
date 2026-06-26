@@ -3,7 +3,9 @@ Enrichment Service — GeoIP + Reverse DNS lookup.
 Caches results in Redis with 1-hour TTL.
 """
 import asyncio
+import ipaddress
 import socket
+import threading
 from typing import Optional
 from dataclasses import dataclass
 from functools import lru_cache
@@ -18,6 +20,10 @@ settings = get_settings()
 # Suspicious countries for auto-tagging
 SUSPICIOUS_COUNTRIES = {"CN", "RU", "KP", "IR", "BY", "UA"}
 GEOLITE2_URL = "https://github.com/P3TERX/GeoLite2/releases/download/v2.1.0/GeoLite2-City.mmdb"
+
+# Critical B-C11: hard cap on the blocking DNS call so a slow upstream
+# resolver can't stall the ingest pipeline indefinitely.
+_RDNS_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass
@@ -45,15 +51,22 @@ class EnrichmentResult:
 
 class RedisCache:
     _instance: Optional[redis.Redis] = None
+    # Critical B-C12: a class-level mutable singleton needs a lock, otherwise
+    # two coroutines racing on the first call can both pass the None-check
+    # and create two different clients. The second write wins, the first
+    # client is leaked, and Redis ConnectionPool accounting drifts.
+    _lock = threading.Lock()
 
     @classmethod
     async def get(cls) -> redis.Redis:
         if cls._instance is None:
-            cls._instance = redis.from_url(
-                settings.REDIS_URL,
-                encoding="utf-8",
-                decode_responses=True,
-            )
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = redis.from_url(
+                        settings.REDIS_URL,
+                        encoding="utf-8",
+                        decode_responses=True,
+                    )
         return cls._instance
 
 
@@ -78,12 +91,21 @@ class GeoIPService:
         if db is None:
             return None
 
-        # Skip private/RFC1918 addresses
+        # Skip private/RFC1918/loopback/link-local addresses. The previous
+        # implementation used `socket.inet_aton` which only accepts IPv4
+        # dotted-quad — any IPv6 address raised and silently returned None.
         try:
-            if ip in ('127.0.0.1', 'localhost', '::1'):
-                return None
-            socket.inet_aton(ip)  # Validate IP
-        except Exception:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
             return None
 
         try:
@@ -102,21 +124,33 @@ class GeoIPService:
 class ReverseDNSService:
     @classmethod
     async def lookup(cls, ip: str) -> Optional[str]:
-        # Skip private addresses
+        # Critical B-C11: validate the IP with the stdlib `ipaddress` module
+        # so IPv6 and link-local addresses don't fall through the (IPv4-only)
+        # `socket.inet_aton` check. Also bound the blocking gethostbyaddr
+        # call with a timeout — a slow upstream resolver would otherwise stall
+        # the entire ingest coroutine.
         try:
-            socket.inet_aton(ip)
-        except Exception:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
             return None
 
-        if ip.startswith(('10.', '172.16.', '192.168.', '127.')):
-            return None
-
+        loop = asyncio.get_running_loop()
         try:
-            hostname, _, _ = await asyncio.get_running_loop().run_in_executor(
-                None, socket.gethostbyaddr, ip
+            hostname, _, _ = await asyncio.wait_for(
+                loop.run_in_executor(None, socket.gethostbyaddr, ip),
+                timeout=_RDNS_TIMEOUT_SECONDS,
             )
             return hostname
-        except Exception:
+        except (asyncio.TimeoutError, socket.herror, socket.gaierror, OSError):
             return None
 
 

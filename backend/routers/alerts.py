@@ -118,6 +118,7 @@ async def delete_alert(
 @router.get("/triggered")
 async def get_triggered_alerts(
     limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     tenant: Optional[str] = Query(None, description="Filter by tenant"),
     severity: Optional[str] = Query(None, description="Filter by severity: low, medium, high, critical"),
     source: Optional[str] = Query(None, description="Filter by source: api, ad, firewall, etc."),
@@ -136,6 +137,9 @@ async def get_triggered_alerts(
     parameter is forcibly overridden with the JWT's tenant claim — a Viewer
     cannot pass another tenant's name and broaden their view. Admins honour
     the parameter as supplied (or see all rows when it is omitted).
+
+    HIGH (pagination): supports `?offset=N&limit=M` so the UI can fetch
+    page-by-page. Response carries `total` for the page count.
     """
     engine = AlertEngine(db)
 
@@ -145,8 +149,9 @@ async def get_triggered_alerts(
     if current_user.role == "Viewer":
         filter_tenant = current_user.tenant
 
-    alerts = await engine.get_triggered_alerts(
+    alerts, total = await engine.get_triggered_alerts(
         limit=limit,
+        offset=offset,
         tenant=filter_tenant,
         severity=severity,
         source=source,
@@ -177,7 +182,7 @@ async def get_triggered_alerts(
             "triggered_at": a.triggered_at.isoformat() if a.triggered_at else None
         })
 
-    return {"alerts": alert_list, "total": len(alert_list)}
+    return {"alerts": alert_list, "total": total, "offset": offset, "limit": limit}
 
 
 @router.get("/triggered/{alert_id}")
