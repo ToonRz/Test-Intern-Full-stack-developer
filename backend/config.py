@@ -14,8 +14,12 @@ class Settings(BaseSettings):
     # Redis (for caching enrichment)
     REDIS_URL: str = "redis://redis:6379/0"
 
-    # JWT
-    SECRET_KEY: str = "change-me-in-production"
+    # JWT — empty default forces env-var-or-die. The boot guard in
+    # `backend/main.py` refuses to start with empty / placeholder / short
+    # SECRET_KEY (see _is_placeholder_secret_key + tests/test_secret_key_check.py).
+    # Hardening B-C1-PR-B: removed the legacy `"change-me-in-production"`
+    # literal default — the denylist in main.py keeps it as a defence in depth.
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
