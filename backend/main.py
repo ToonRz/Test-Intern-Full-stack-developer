@@ -310,12 +310,28 @@ async def _seed_users():
     Default for SEED_DEMO_USERS is "false" so a production deployment that
     forgets to set the env var will NOT auto-create users with the well-known
     passwords admin123 / viewer123. Set to "true" for local dev / CI.
+
+    Hardening B-C1-PR-B (item #2): when SEED_DEMO_USERS is enabled, both
+    ADMIN_PASSWORD and VIEWER_PASSWORD must be set to non-empty values.
+    Refuse to seed otherwise — the previous \"admin123\" / \"viewer123\"
+    literal defaults silently shipped the well-known passwords to anyone
+    who flipped SEED_DEMO_USERS on without also overriding the env vars.
     """
     from backend.storage.database import UserDB
     from sqlalchemy import select, func
 
     if os.getenv("SEED_DEMO_USERS", "false").lower() not in ("1", "true", "yes"):
         return
+
+    # Guard BEFORE any DB mutation so a refused seed leaves zero rows.
+    admin_pw = os.getenv("ADMIN_PASSWORD")
+    viewer_pw = os.getenv("VIEWER_PASSWORD")
+    if not admin_pw or not viewer_pw:
+        raise RuntimeError(
+            "ADMIN_PASSWORD and VIEWER_PASSWORD must be set (non-empty) "
+            "when SEED_DEMO_USERS=true. Refusing to seed demo users with "
+            "an unknown password."
+        )
 
     async with async_session() as db:
         count = (await db.execute(select(func.count(UserDB.id)))).scalar_one()
@@ -327,14 +343,14 @@ async def _seed_users():
             email="admin@example.com",
             role="Admin",
             tenant="*",
-            hashed_password=get_password_hash(os.getenv("ADMIN_PASSWORD", "admin123"))
+            hashed_password=get_password_hash(admin_pw)
         )
         viewer = UserDB(
             username="viewer",
             email="viewer@example.com",
             role="Viewer",
             tenant="demoA",
-            hashed_password=get_password_hash(os.getenv("VIEWER_PASSWORD", "viewer123"))
+            hashed_password=get_password_hash(viewer_pw)
         )
         db.add_all([admin, viewer])
         await db.commit()

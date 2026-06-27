@@ -32,8 +32,10 @@ from sqlalchemy import select, func
 @pytest_asyncio.fixture
 async def _wipe_and_re_seed():
     """Wipe users so the empty-password guard's refusal to seed is
-    observable. After the test, restore conftest's seed so other
-    tests in the session still find admin/viewer rows.
+    observable. Re-seeding is handled by conftest's _clean_tables
+    autouse fixture on entry to the next test (which runs AFTER
+    monkeypatch restores the env, so ADMIN_PASSWORD/VIEWER_PASSWORD
+    are back to their conftest setdefault values).
     """
     from sqlalchemy import delete
     from backend.storage.database import engine
@@ -41,11 +43,6 @@ async def _wipe_and_re_seed():
     async with engine.begin() as conn:
         await conn.execute(delete(UserDB))
     yield
-    # Restore: re-run seed_defaults so the next test's fixtures work.
-    # _clean_tables (autouse) actually handles this on exit; this is
-    # belt-and-suspenders.
-    from backend.main import seed_defaults
-    await seed_defaults()
 
 
 # ── Guards ──────────────────────────────────────────────────────────────
