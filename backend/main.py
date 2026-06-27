@@ -40,17 +40,43 @@ _MAX_TCP_BUF_BYTES = 1_048_576  # 1 MiB
 _syslog_udp_sem = asyncio.Semaphore(_MAX_SYSLOG_UDP_TASKS)
 
 # Refuse to boot with insecure defaults so SECRET_KEY isn't silently weak.
-# Critical B-C1: always enforce — no DEBUG bypass. The DEBUG check previously
-# allowed test/staging builds to accept the literal default and short keys,
-# which would then ship unchanged if the operator forgot to set the env var
-# before flipping DEBUG=false. The boot check is the last line of defence.
+# Critical B-C1: always enforce — no DEBUG bypass. See
+# tests/test_secret_key_check.py for the full incident writeup and the
+# _is_placeholder_secret_key contract.
+_SECRET_KEY_PLACEHOLDERS = frozenset({
+    "change-me-in-production",
+    "CHANGE_ME_GENERATE_WITH_OPENSSL_RAND_HEX_32",
+})
+
+# Anchored prefix match — `.env.example` placeholders start with
+# `CHANGE_ME_*` / `change-me-*`. Anchoring avoids false-positives on
+# legitimate secrets that merely contain the letters `change_me` somewhere
+# (e.g. a passphrase like `please_change_me_quarterly`).
+_PLACEHOLDER_PREFIX = re.compile(r"^change[_-]?me([_-]|$)", re.IGNORECASE)
+
+
+def _is_placeholder_secret_key(value: str) -> bool:
+    """True if `value` is a placeholder that must never reach production.
+
+    Two layers: explicit denylist (locks known literals) + anchored prefix
+    regex (catches the .env.example convention). The anchored prefix is
+    intentionally narrow — it does not try to detect substrings anywhere
+    in the value, because that would falsely reject legitimate passphrases
+    that happen to contain `change_me` letters.
+    """
+    if value in _SECRET_KEY_PLACEHOLDERS:
+        return True
+    return bool(_PLACEHOLDER_PREFIX.match(value))
+
+
 if (
-    settings.SECRET_KEY == "change-me-in-production"
+    _is_placeholder_secret_key(settings.SECRET_KEY)
     or len(settings.SECRET_KEY) < 32
 ):
     raise RuntimeError(
-        "SECRET_KEY must be set to a 32+ character random value. "
-        "Set SECRET_KEY in .env to a value generated via `openssl rand -hex 32`."
+        "SECRET_KEY must be set to a 32+ character random value, not a "
+        "placeholder from .env.example. Generate one with "
+        "`openssl rand -hex 32` and put it in .env."
     )
 
 
