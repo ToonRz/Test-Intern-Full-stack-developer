@@ -121,7 +121,13 @@ def _parse_capture_lines(stderr: str) -> list[dict]:
 
     Each line: LEVEL|message|key=value|key=value|...
     Returns list of {level, message, extras: dict}.
+
+    Values are emitted with %r formatting (so strings come back quoted
+    like 'foo', ints come back like 49, bools like True). Use
+    ast.literal_eval to un-repr them so equality comparisons work
+    against the original Python value.
     """
+    import ast
     lines = [ln for ln in stderr.splitlines() if "|" in ln]
     parsed = []
     for ln in lines:
@@ -135,7 +141,12 @@ def _parse_capture_lines(stderr: str) -> list[dict]:
             if "=" not in kv:
                 continue
             k, v = kv.split("=", 1)
-            extras[k] = v
+            try:
+                extras[k] = ast.literal_eval(v)
+            except (ValueError, SyntaxError):
+                # Value wasn't a Python literal (e.g. unquoted string from
+                # a logger that didn't %r). Keep the raw string.
+                extras[k] = v
         parsed.append({"level": level, "message": message, "extras": extras})
     return parsed
 
@@ -189,7 +200,7 @@ def test_boot_refusal_emits_structured_log():
         "Boot guard log must carry secret_length for ops dashboards. "
         "extras=%r" % first["extras"]
     )
-    assert first["extras"]["secret_length"] == str(len(_PLACEHOLDER_SECRET)), (
+    assert first["extras"]["secret_length"] == len(_PLACEHOLDER_SECRET), (
         "secret_length must be %d, got %r"
         % (len(_PLACEHOLDER_SECRET), first["extras"].get("secret_length"))
     )

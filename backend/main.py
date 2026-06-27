@@ -39,6 +39,13 @@ _MAX_SYSLOG_UDP_TASKS = 1000
 _MAX_TCP_BUF_BYTES = 1_048_576  # 1 MiB
 _syslog_udp_sem = asyncio.Semaphore(_MAX_SYSLOG_UDP_TASKS)
 
+# PR-A (hardening #5): backend boot-health gauge, exposed via /metrics.
+# Initialised to 0 at module top, flipped to 1 synchronously after the
+# SECRET_KEY boot guard passes (see line ~85 below). ASGITransport in
+# tests does NOT drive lifespan events, so this MUST happen at import
+# time for the in-process /metrics test to see gauge=1.
+_BACKEND_UP = 0
+
 # Refuse to boot with insecure defaults so SECRET_KEY isn't silently weak.
 # Critical B-C1: always enforce — no DEBUG bypass. See
 # tests/test_secret_key_check.py for the full incident writeup and the
@@ -73,11 +80,32 @@ if (
     _is_placeholder_secret_key(settings.SECRET_KEY)
     or len(settings.SECRET_KEY) < 32
 ):
+    # PR-A (hardening #4): emit a structured CRITICAL log BEFORE raising so
+    # Loki/Grafana can match on a stable `event=` identifier instead of a
+    # bare Python traceback. `secret_length` is logged but the secret
+    # value itself NEVER appears in any log payload — see test
+    # test_boot_guard_observability.py::test_boot_refusal_emits_structured_log.
+    placeholder = _is_placeholder_secret_key(settings.SECRET_KEY)
+    logger.critical(
+        "SECRET_KEY refused at boot: %s",
+        "placeholder-shaped" if placeholder else "empty or too short",
+        extra={
+            "event": "secret_key_boot_refused",
+            "placeholder_detected": placeholder,
+            "secret_length": len(settings.SECRET_KEY),
+            "secret_source": "env",
+        },
+    )
     raise RuntimeError(
         "SECRET_KEY must be set to a 32+ character random value, not a "
         "placeholder from .env.example. Generate one with "
         "`openssl rand -hex 32` and put it in .env."
     )
+
+# PR-A (hardening #5): boot guard passed — flip the /metrics gauge.
+# Done synchronously at import time so ASGITransport-based tests (which
+# do not drive lifespan) observe gauge=1 immediately.
+_BACKEND_UP = 1
 
 
 async def _retention_loop():
@@ -247,6 +275,9 @@ async def metrics():
         log_total = triggered_total = rules_total = ack_total = 0
 
     body = (
+        "# HELP log_management_backend_up Process boot health (1=up, 0=down).\n"
+        "# TYPE log_management_backend_up gauge\n"
+        f"log_management_backend_up {_BACKEND_UP}\n"
         "# HELP log_management_logs_total Total ingested log rows.\n"
         "# TYPE log_management_logs_total counter\n"
         f"log_management_logs_total {log_total}\n"
