@@ -40,10 +40,11 @@ _MAX_TCP_BUF_BYTES = 1_048_576  # 1 MiB
 _syslog_udp_sem = asyncio.Semaphore(_MAX_SYSLOG_UDP_TASKS)
 
 # PR-A (hardening #5): backend boot-health gauge, exposed via /metrics.
-# Initialised to 0 at module top, flipped to 1 synchronously after the
-# SECRET_KEY boot guard passes (see line ~85 below). ASGITransport in
-# tests does NOT drive lifespan events, so this MUST happen at import
-# time for the in-process /metrics test to see gauge=1.
+# Initialised to 0 at module top, flipped to 1 inside _check_secret_key()
+# when the guard passes. After PR-C, that function runs during lifespan
+# startup (not at module import), so the gauge value reflects actual
+# boot completion — see test_metrics_includes_backend_up_gauge which
+# drives lifespan via asgi_lifespan.LifespanManager before scraping.
 _BACKEND_UP = 0
 
 # Refuse to boot with insecure defaults so SECRET_KEY isn't silently weak.
@@ -76,36 +77,49 @@ def _is_placeholder_secret_key(value: str) -> bool:
     return bool(_PLACEHOLDER_PREFIX.match(value))
 
 
-if (
-    _is_placeholder_secret_key(settings.SECRET_KEY)
-    or len(settings.SECRET_KEY) < 32
-):
-    # PR-A (hardening #4): emit a structured CRITICAL log BEFORE raising so
-    # Loki/Grafana can match on a stable `event=` identifier instead of a
-    # bare Python traceback. `secret_length` is logged but the secret
-    # value itself NEVER appears in any log payload — see test
-    # test_boot_guard_observability.py::test_boot_refusal_emits_structured_log.
-    placeholder = _is_placeholder_secret_key(settings.SECRET_KEY)
-    logger.critical(
-        "SECRET_KEY refused at boot: %s",
-        "placeholder-shaped" if placeholder else "empty or too short",
-        extra={
-            "event": "secret_key_boot_refused",
-            "placeholder_detected": placeholder,
-            "secret_length": len(settings.SECRET_KEY),
-            "secret_source": "env",
-        },
-    )
-    raise RuntimeError(
-        "SECRET_KEY must be set to a 32+ character random value, not a "
-        "placeholder from .env.example. Generate one with "
-        "`openssl rand -hex 32` and put it in .env."
-    )
+def _check_secret_key() -> None:
+    """Boot-time SECRET_KEY guard. Raises RuntimeError on placeholder /
+    empty / too-short values. On success, flips the /metrics boot-health
+    gauge to 1.
 
-# PR-A (hardening #5): boot guard passed — flip the /metrics gauge.
-# Done synchronously at import time so ASGITransport-based tests (which
-# do not drive lifespan) observe gauge=1 immediately.
-_BACKEND_UP = 1
+    PR-C (hardening #6): moved out of module-load-time into lifespan
+    startup so `import backend.main` always succeeds — Alembic / OpenAPI
+    codegen / CI smoke tests can import the app without setting a real
+    secret. The guard now runs AFTER setup_telemetry() so refusal events
+    land on a wired-up OTel pipeline.
+
+    Function is exposed at module level (under the candidate names pinned
+    by tests/test_lifespan_boot_guard.py) so the OTel-ordering test can
+    monkeypatch it and observe call order against setup_telemetry.
+    """
+    global _BACKEND_UP
+    if (
+        _is_placeholder_secret_key(settings.SECRET_KEY)
+        or len(settings.SECRET_KEY) < 32
+    ):
+        # PR-A (hardening #4): emit a structured CRITICAL log BEFORE raising
+        # so Loki/Grafana can match on a stable `event=` identifier instead
+        # of a bare Python traceback. The secret value itself NEVER appears
+        # in any log payload — see
+        # tests/test_boot_guard_observability.py::test_boot_refusal_emits_structured_log.
+        placeholder = _is_placeholder_secret_key(settings.SECRET_KEY)
+        logger.critical(
+            "SECRET_KEY refused at boot: %s",
+            "placeholder-shaped" if placeholder else "empty or too short",
+            extra={
+                "event": "secret_key_boot_refused",
+                "placeholder_detected": placeholder,
+                "secret_length": len(settings.SECRET_KEY),
+                "secret_source": "env",
+            },
+        )
+        raise RuntimeError(
+            "SECRET_KEY must be set to a 32+ character random value, not a "
+            "placeholder from .env.example. Generate one with "
+            "`openssl rand -hex 32` and put it in .env."
+        )
+    # PR-A (hardening #5): boot guard passed — flip the /metrics gauge.
+    _BACKEND_UP = 1
 
 
 async def _retention_loop():
@@ -154,6 +168,15 @@ def _parse_timestamp(ts: str) -> datetime:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # PR-C (hardening #6): OTel/telemetry MUST run BEFORE the boot guard
+    # so the guard's CRITICAL refusal log lands on a wired-up OTel
+    # pipeline (see test_lifespan_runs_telemetry_before_guard).
+    setup_telemetry()
+    # PR-C: the boot guard now lives here, not at module top. Raises on
+    # placeholder / empty / short SECRET_KEY so uvicorn fails the first
+    # request rather than the import — Alembic / OpenAPI codegen / CI
+    # smoke tests can `import backend.main` without setting a real secret.
+    _check_secret_key()
     # Startup
     await init_db()
     await seed_defaults()
@@ -164,9 +187,6 @@ async def lifespan(app: FastAPI):
     from backend.storage.database import async_session as _async_session
     async with _async_session() as _db:
         await _AE(_db)._retry_pending_deliveries()
-    # High #6: instrument the app after it's defined (was at module level,
-    # fragile if anyone reorders imports above).
-    setup_telemetry()
     app.state.syslog_task = asyncio.create_task(start_syslog_listener())
     app.state.retention_task = asyncio.create_task(_retention_loop())
     yield

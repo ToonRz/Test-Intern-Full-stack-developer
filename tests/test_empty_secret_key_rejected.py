@@ -9,79 +9,21 @@ check happened to catch it - but only by accident. After PR-B the default
 becomes "" (empty string) and the boot guard MUST refuse empty values
 explicitly, regardless of placeholder detection.
 
-Why subprocesses (see conftest.py):
+Why this is in-process (post PR-C):
 - conftest.py sets SECRET_KEY via os.environ.setdefault BEFORE importing
-  backend.main. The module-level guard in backend.main runs once and
-  pydantic-settings caches get_settings() with lru_cache. Mutating
-  os.environ in the parent process and re-importing cannot re-trigger
-  the guard. We need a fresh interpreter.
-- subprocess.run with a constructed env gives us a clean interpreter
-  whose os.environ does NOT inherit the test runner's setdefault values.
+  backend.main.
+- After PR-C, the guard lives in `_check_secret_key()` (called from
+  lifespan startup), not at module-load-time, so we can invoke it
+  directly via monkeypatched settings instead of relying on import-time
+  crash. This also lets the test assert against the same Settings
+  instance the production code reads from.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import textwrap
+import pytest
 
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _run_import_with_env(env_overrides: dict) -> subprocess.CompletedProcess:
-    """Run `python -c "import backend.main"` in a fresh interpreter with
-    a fully-controlled environment.
-
-    `env_overrides` keys REPLACE matching entries in the parent env (or
-    add new ones). Crucially, we start from a minimal env (PATH,
-    PYTHONPATH, HOME) so the test runner's os.environ.setdefault values
-    do NOT leak into the subprocess via inheritance. Each override is
-    the single source of truth for that variable.
-    """
-    base_env = {
-        "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": REPO_ROOT,
-        "HOME": os.environ.get("HOME", "/tmp"),
-        # Picked up by pydantic-settings in the subprocess. The boot guard
-        # in PR-B must reject this with an explicit "SECRET_KEY must be
-        # set" message - not the placeholder message, because "" does
-        # not match the CHANGE_ME_* convention.
-        "SECRET_KEY": "",
-        # Other settings: anything required for backend.main import.
-        "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
-        "REDIS_URL": "redis://localhost:6379/0",
-        "SEED_DEMO_USERS": "false",
-        "ADMIN_PASSWORD": "",
-        "VIEWER_PASSWORD": "",
-    }
-    base_env.update(env_overrides)
-    script = textwrap.dedent(
-        """
-        import sys
-        try:
-            import backend.main  # noqa: F401
-        except RuntimeError as e:
-            print("RAISED_RUNTIME_ERROR:", str(e), file=sys.stderr)
-            sys.exit(42)
-        except Exception as e:
-            print("RAISED_OTHER:", type(e).__name__, str(e), file=sys.stderr)
-            sys.exit(43)
-        print("IMPORT_OK", file=sys.stderr)
-        sys.exit(0)
-        """
-    )
-    return subprocess.run(
-        [sys.executable, "-c", script],
-        env=base_env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=REPO_ROOT,
-    )
-
-
-def test_empty_secret_key_rejected_by_boot_guard():
+def test_empty_secret_key_rejected_by_boot_guard(monkeypatch):
     """Boot guard must reject SECRET_KEY="" with a clear refusal message.
 
     The exact message wording is the implementer's choice, but it MUST
@@ -90,51 +32,39 @@ def test_empty_secret_key_rejected_by_boot_guard():
     set the variable to an empty string). We assert a substring that
     any reasonable refusal message will contain.
     """
-    result = _run_import_with_env({"SECRET_KEY": ""})
+    import backend.main as _bm
+    # Override the cached settings SECRET_KEY to empty. _check_secret_key
+    # reads settings.SECRET_KEY at call time, so this propagates without
+    # needing to bust the lru_cache.
+    monkeypatch.setattr(_bm.settings, "SECRET_KEY", "")
 
-    assert result.returncode == 42, (
-        "Empty SECRET_KEY must cause `import backend.main` to raise "
-        "RuntimeError. Got returncode=%s stderr=%s"
-        % (result.returncode, result.stderr)
-    )
-    assert "RAISED_RUNTIME_ERROR" in result.stderr, (
-        "Expected a RuntimeError to be raised. stderr=%r" % result.stderr
-    )
-    # Substring match - tolerant of phrasing variations across PRs.
-    # The implementer MUST mention the variable name so operators can
-    # diagnose from logs alone.
-    assert "SECRET_KEY must be set" in result.stderr, (
+    with pytest.raises(RuntimeError) as exc_info:
+        _bm._check_secret_key()
+
+    msg = str(exc_info.value)
+    assert "SECRET_KEY must be set" in msg, (
         "Refusal message must explicitly name SECRET_KEY so operators "
-        "can diagnose. stderr=%r" % result.stderr
+        "can diagnose. Got: %r" % msg
     )
-    # And must NOT be the legacy placeholder message - that would
-    # mislead operators into thinking their env contained a placeholder.
-    assert "CHANGE_ME" not in result.stderr, (
+    # Must NOT be confused with the legacy placeholder message -
+    # otherwise operators see a misleading "change-me-in-production" error
+    # when their env actually contains an empty value.
+    assert "CHANGE_ME" not in msg, (
         "Empty-value refusal must not be confused with placeholder "
-        "refusal. stderr=%r" % result.stderr
+        "refusal. Got: %r" % msg
     )
 
 
-def test_non_empty_secret_key_still_boots():
-    """Sanity check on the helper: a non-empty non-placeholder key boots.
+def test_non_empty_secret_key_still_boots(monkeypatch):
+    """Sanity check: a non-empty non-placeholder key passes the guard.
 
     This pins the negative case so a future regression that rejects
     ALL secrets (instead of just empty/placeholder ones) is caught
     immediately by this test going red alongside the empty-key test.
     """
-    # 32+ chars, no CHANGE_ME prefix, not in the denylist.
-    real_key = "a" * 32 + "_real_key_for_subprocess_helper_sanity"
-    result = _run_import_with_env({"SECRET_KEY": real_key})
+    import backend.main as _bm
+    real_key = "a" * 32 + "_real_key_for_guard_sanity_check"
+    monkeypatch.setattr(_bm.settings, "SECRET_KEY", real_key)
 
-    # Either the import succeeded (exit 0) OR the subprocess raised an
-    # error other than the SECRET_KEY guard - the helper script catches
-    # RuntimeError specifically. If we hit exit 43 with anything other
-    # than "secret_key"-related text, that's still a helper defect worth
-    # surfacing, but for the purposes of this test we only care that we
-    # did NOT see the empty-key refusal.
-    assert "RAISED_RUNTIME_ERROR" not in result.stderr or (
-        "SECRET_KEY must be set" not in result.stderr
-    ), (
-        "A real 32-char key must not trigger the empty-SECRET_KEY "
-        "refusal. stderr=%r" % result.stderr
-    )
+    # Must NOT raise.
+    _bm._check_secret_key()

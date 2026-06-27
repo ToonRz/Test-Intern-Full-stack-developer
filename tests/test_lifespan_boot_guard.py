@@ -29,10 +29,13 @@ import textwrap
 
 import pytest
 
-# asgi-lifespan is an optional dev dependency. If it's not installed,
-# the in-process LifespanManager tests skip with a clear message. The
-# subprocess import test below works without it.
-asgi_lifespan = pytest.importorskip("asgi_lifespan")
+# asgi-lifespan is an optional dev dependency. Import lazily so the
+# subprocess-only test (#1) still runs when it's absent; the
+# LifespanManager-based tests below skip individually.
+try:
+    import asgi_lifespan  # type: ignore
+except ImportError:
+    asgi_lifespan = None  # type: ignore
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,6 +110,8 @@ def test_import_succeeds_with_placeholder_secret():
 
 @pytest.mark.asyncio
 async def test_lifespan_refuses_placeholder_secret(monkeypatch):
+    if asgi_lifespan is None:
+        pytest.skip("asgi-lifespan not installed")
     """When lifespan startup runs with a placeholder SECRET_KEY, it
     must raise (the guard fires inside lifespan, after setup_telemetry).
 
@@ -160,6 +165,8 @@ async def test_lifespan_refuses_placeholder_secret(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_lifespan_runs_telemetry_before_guard(monkeypatch):
+    if asgi_lifespan is None:
+        pytest.skip("asgi-lifespan not installed")
     """Lifespan ordering invariant: setup_telemetry() runs before the
     boot guard, so the guard's refusal log lands on a wired-up OTel
     pipeline.
@@ -267,6 +274,9 @@ async def test_lifespan_happy_path_unchanged():
     completes without error. This is the regression net: PR-C must
     not break the happy path.
     """
+    if asgi_lifespan is None:
+        pytest.skip("asgi-lifespan not installed")
+
     from backend.main import app
 
     # The conftest setdefault has populated a valid SECRET_KEY in the
